@@ -44,6 +44,7 @@ mutable struct QDT
     pcof_l::Float64
     pcof_u::Float64
     
+    #move outside 
     #"real" system 
     measured_population_infidelity::Vector{Float64}
     measured_state_infidelity::Vector{Float64}
@@ -52,13 +53,13 @@ mutable struct QDT
     Mspam_matrices::Vector{Matrix{Float64}}
 
     function QDT(N, Ne, Ng, gate_set, Mspam_order)
-        number_of_samples = 10
+        number_of_samples = 100
         param_samples = zeros(number_of_samples)
         N_gates = length(gate_set)
         real_control_op = [0 1.0; 1.0 0]
         imag_control_op = [0 1.0; -1.0 0]
         degree = fill(2, N_gates)
-        nsplines = fill(3, N_gates)
+        nsplines = fill(6, N_gates)
         T_gate = fill(50.0, N_gates)
         steps = fill(200, N_gates)
         N_coeff = 2 .*degree .*nsplines 
@@ -103,8 +104,11 @@ function optimize_controls(qdt::QDT)
     pcof_l = qdt.pcof_l 
     pcof_u = qdt.pcof_u
     for i in 1:N_gates 
+        #include while loop to accept predicted infidelity when it's small
         probs = [SchrodingerProb([0 0; 0 j], [real_control_ops], [imag_control_ops], U0, T_gates[i], steps[i]) for j in qdt.param_samples .- omega_rot]
+
         opt_ret_multiple = optimize_prob(probs, controls[i], pcof_by_gate[i], gate_set[i], pcof_lbound=pcof_l, pcof_ubound=pcof_u, cost_type=:Infidelity, ipopt_options=["max_iter" => 100, "print_level" => 3])
+
         qdt.predicted_infidelity[i] = opt_ret_multiple.obj_val
         qdt.pcof_by_gate[i] = opt_ret_multiple.x
     end
@@ -169,14 +173,15 @@ function measured_infidelity(qdt::QDT, true_parameter)
     gate_set = qdt.gate_set 
     steps = qdt.steps
     controls = qdt.controls 
+    T_gate = qdt.T_gate
     pcof_by_gate = qdt.pcof_by_gate
     prod_states = prod(qdt.Ng .+ qdt.Ne)
     #Change this to be somewhere else
-
+    U0 = Matrix(1.0*I, Ne[1] + Ng[1], Ne[1] + Ng[1])
     # measured_population_infidelity = zeros(N_gates)
     # measured_state_infidelity = zeros(N_gates)
     for i in 1:N_gates
-        true_problem = SchrodingerProb([0 0; 0 true_parameter - omega_rot], [real_control_ops], [imag_control_ops], U0, T_gates[i], steps[i])
+        true_problem = SchrodingerProb([0 0; 0 true_parameter - omega_rot], [real_control_ops], [imag_control_ops], U0, T_gate[i], steps[i])
         meas_state_history = eval_forward(true_problem, controls[i], pcof_by_gate[i])
         final_state = meas_state_history[:,end,:]
         final_state_abs = abs2.(final_state)
@@ -245,9 +250,10 @@ function save_state(qdt::QDT, history::qdt_history, true_parameter)
     history.next_index += 1
 end
 
+true_parameter = 4.5
+omega_rot = true_parameter
 
-
-
+U0 = [1 0; 0 1]
 N = 1 
 Ne = [2]
 Ng = [0]
@@ -256,18 +262,20 @@ y_gate = [0 im; -im 0]
 z_gate = [1.0 0; 0 -1.0]
 gate_set = [x_gate, y_gate, z_gate]
 N_gates = length(gate_set)
-Mspam_order = 1E-3
+Mspam_order = 5E-3
 Twin = QDT(N, Ne, Ng, gate_set, Mspam_order)
-maximum_size = 100
-history = qdt_history(maximum_size, N_gates)
 
-# center = 4.5
-# std_dev = 0.0
-# param_samples = Normal(center, std_dev)
-# omega_rot = center
-# Twin.param_samples = rand(param_samples, Twin.number_of_samples) 
+maximum_size = 1000
 
-true_parameter = 4.5
+center = 4.5
+std_dev = 0.1
+param_samples = Normal(center, std_dev)
+omega_rot = center
+Twin.param_samples = rand(param_samples, Twin.number_of_samples) 
+
+
+
+std_dev = 0.1
 param_samples = Normal(true_parameter, std_dev)
 Twin.param_samples = rand(param_samples, Twin.number_of_samples)
 optimize_controls(Twin)
@@ -276,16 +284,23 @@ optimize_controls(Twin)
 # save_state(Twin, history, true_parameter)
 
 #Case where characterize and then optimize
-
+history = qdt_history(maximum_size, N_gates)
+x_range = zeros(maximum_size)
 for i in 1:maximum_size 
-    global true_parameter += 0.01*abs(rand())
+    omega = true_parameter + 0.3*sin(2*pi*i/maximum_size)
+    x_range[i] = omega
+    # global true_parameter += (-1)^i*0.01*i
     std_dev = 0.0
-    measured_infidelity(Twin, true_parameter)
-    save_state(Twin, history, true_parameter)
+    measured_infidelity(Twin, omega)
+    save_state(Twin, history, omega)
 end
 
-measured_population_infidelity_plot = plot(history.measured_population_infidelity', yscale=:log10, labels = ["Gate 1" "Gate 2" "Gate 3"], ylabel = "Population Infidelity")
-measured_state_infidelity_plot = plot(history.measured_state_infidelity', yscale=:log10, labels = ["Gate 1" "Gate 2" "Gate 3"], ylabel = "State Infidelity")
+cols = palette(:default)
+measured_population_infidelity_plot = plot(x_range, history.measured_population_infidelity', yscale =:log10, labels = ["Meas: Gate 1" "Meas: Gate 2" "Meas: Gate 3"], ylabel = "Population Infidelity", color=[cols[1] cols[2] cols[3]], yticks = [1e-3, 1e-2, 1e-1, 1e0])
+plot!(x_range, history.predicted_infidelity', yscale =:log10, labels = ["Pred: Gate 1" "Pred: Gate 2" "Pred: Gate 3"], legend_columns = 2, legend=:outertop, linestyle =:dash, color=[cols[1] cols[2] cols[3]])
+vline!(Twin.param_samples, alpha = 0.5, color =:grey)
+savefig("/Results/RN_plot_std_dev_$(std_dev).png")
+# measured_state_infidelity_plot = plot(history.measured_state_infidelity', yscale=:log10, labels = ["Gate 1" "Gate 2" "Gate 3"], ylabel = "State Infidelity")
 
 
 
