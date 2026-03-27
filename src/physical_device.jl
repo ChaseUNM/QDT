@@ -1,4 +1,4 @@
-using LinearAlgebra, QuantumGateDesign, ValueHistories
+using LinearAlgebra, QuantumGateDesign, ValueHistories, Random, Distributions
 include("digital_device.jl")
 
 ########################################################################
@@ -24,24 +24,40 @@ function column_stochastic(ϵ::Array{Float64})
 end
 
 
+
 function infidelity_population(p, q)
     A = (sum(sqrt.(p) .* sqrt.(q), dims = 1)).^2
     return 1 - mean(A)
 end
 
 
+
+function sample_quantum_state(samples, p)
+    p_obs = zeros(size(p))
+    for i in 1:size(p, 1)
+        p[:,i] = p[:,i]/sum(p[:,i])
+        p_distribution = Multinomial(samples, p[:,i])
+        N_shots = rand(p_distribution)
+        p_obs[:,i] = N_shots/samples 
+    end
+    return p_obs 
+end
+
+
 ########################################################################
 ########################################################################
 
-mutable struct PhysicalQudit <: DigitalDevice 
+mutable struct PhysicalQudit
 
-    qubit::DigitalQudit
+    # FIELDS
+    qudit::DigitalQudit
     M_spam::AbstractMatrix
     n_readout_samples::Int64
     measured_state_infidelity::Dict{GateType, History{Int, Float64}}
     measured_population_infidelity::Dict{GateType, History{Int, Float64}}
     
-    function PhysicalQudit(qubit::DigitalQudit; M_spam_order=1e-3, n_readout_samples=1000)
+    # CONSTRUCTORS
+    function PhysicalQudit(qudit::DigitalQudit; M_spam_order=1e-3, n_readout_samples=1000)
 
         # Generate the Mspam matrix
         N = Ne + Ng;
@@ -52,7 +68,29 @@ mutable struct PhysicalQudit <: DigitalDevice
         measured_state_infidelity = Dict{GateType, History{Int64, Float64}}()
         measured_population_infidelity = Dict{GateType, History{Int64, Float64}}()
 
-        new(qubit, M_spam, n_readout_samples, measured_state_infidelity, measured_population_infidelity)
+        new(qudit, M_spam, n_readout_samples, measured_state_infidelity, measured_population_infidelity)
+
+    end
+
+
+    function PhysicalQudit(
+                Ne::Int64, Ng::Int64, ω::Float64, ξ::Float64; M_spam_order=1e-3, n_readout_samples=1000
+        )
+
+        # Generate the underlying Digitqudit
+        qudit = DigitalQudit(Ne, Ng)
+        add_param_samples(qudit, [ω], [ξ])
+
+        # Generate the Mspam matrix
+        N = Ne + Ng;
+        ϵ = M_spam_order * rand(N)
+        M_spam = column_stochastic(ϵ)
+
+        # Fidelity histories
+        measured_state_infidelity = Dict{GateType, History{Int64, Float64}}()
+        measured_population_infidelity = Dict{GateType, History{Int64, Float64}}()
+
+        new(qudit, M_spam, n_readout_samples, measured_state_infidelity, measured_population_infidelity)
 
     end
 
@@ -62,31 +100,34 @@ end
 function measured_infidelity(
         q::PhysicalQudit, 
         gate::GateType, 
-        q_control::QubitControl, 
+        q_control::QuditControl, 
         add_SPAM=true
     )
-    # Computes the measured infidelities (state and population) of this qubit
+    # Computes the measured infidelities (state and population) of this qudit
     # for the given gate using the provided control signals
 
     # Target unitary
-    N = q.qubit.Ne + q.qubit.Ng
+    N = q.qudit.Ne + q.qudit.Ng
     U_target = unitary(gate, N)
 
     # Run the controls to get the final state
-    psi_final = run_control(q.qubit, q_control)
+    psi_final = run_control(q.qudit, q_control)
     psi_final = psi_final[1,:,:]
+    # Normalize 
+    psi_final = psi_final ./ norm.(eachcol(psi_final)) 
 
     # State infidelity
     state_infidelity = infidelity(psi_final, U_target, size(U_target,2))
 
     # Population infidelity
+    observed_populations = abs2.(psi_final)
     if add_SPAM
-        p_hat = q.M_spam * psi_final
-        observed_final_state = sample_quantum_pops(q.n_readout_samples, p_hat)
-    else
-        observed_final_state = abs2.(psi_final)
+        observed_populations = sample_quantum_state(q.n_readout_samples, q.M_spam * observed_populations)
     end
-    population_infidelity = infidelity_population(observed_final_state, abs.(U_target))
+    population_infidelity = infidelity_population(
+                                observed_populations, 
+                                abs2.(U_target)
+                            )
 
     # Return or state to q?
     return (state_infidelity, population_infidelity)

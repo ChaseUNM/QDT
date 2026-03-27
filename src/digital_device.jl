@@ -60,19 +60,21 @@ mutable struct QuditControl
         new(max_amplitude, objs, coeffs)
     end
 
-    function QuditControl(c::AbstractControl; timestamp=0, max_amplitude=0.1)
-        #
+    function QuditControl(c::AbstractControl; iter=0, max_amplitude=0.1)
         objs = History(AbstractControl)
-        push!(objs, timestamp, c)
-        # Initialize a set of random coefficients
+        push!(objs, c)
         coeffs = History(Vector{Float64})
-        init_coeffs = (0.5 .- rand(c.N_coeff)) .* max_amplitude
-        push!(coeffs, timestamp, init_coeffs)
-        # 
         new(max_amplitude, objs, coeffs)
     end
 
 end   
+
+
+function lastiter(c::QuditControl)
+    # Returns the timestamp of the last control logged in 
+    # this object's history
+    return max(c.objs.lastiter, 0) 
+end
 
 
 
@@ -82,14 +84,24 @@ function randomize_coeffs(c::QuditControl)
 
     # Verify the control already has an entry that we can
     # build off of
-    if length(c.coeffs) == 0
-        throw("Empty QubitControl cannot be initialized")
+    if length(c.coeffs) == 0 && length(c.objs) == 0
+        throw("Empty QubitControl cannot be randomized")
     end
 
-    # Randomize the coefficients
-    coefs = last(c.spline_coeffs)
-    N_coeff = size(coefs)
-    coefs .= (0.5 .- rand(N_coeff)) .* c.max_amplitude
+    iter, control_obj = last(c.objs)
+    N_coeff = control_obj.N_coeff
+
+    # Generate the first set of random coefficients
+    if c.coeffs.lastiter < iter
+        coefs = (0.5 .- rand(N_coeff)) .* c.max_amplitude
+        push!(c.coeffs, iter, coefs)
+
+    # Randomize existing coefficients
+    else 
+        coefs = c.coeffs.values[end]
+        coefs .= (0.5 .- rand(N_coeff)) .* c.max_amplitude
+    end
+    
 end
 
 
@@ -145,41 +157,43 @@ mutable struct DigitalQudit
 end
 
 
-
-function current_iteration(q::DigitalQudit)
-    # Returns the most recent iteration/timestamp for the
-    # histories in this qudit
-    return last(q.ω)[1]
-end
-
-
-
 function add_param_samples(
                     q::DigitalQudit, 
-                    iter::Int64, 
                     ω::Vector{Float64}, 
-                    ξ::Vector{Float64}
+                    ξ::Vector{Float64};
+                    iter::Int64=-1
     )
     # Appends a sample of frequencies and self-kerr coefficients 
-    # to this qudit's history
+    # to this qudit's history with timestamp 'iter'
+    #
+    # By default, 'iter' is set to the latest iteration + 1
+    # 
     push!(q.ω, iter, ω)
-    q.ω_rot = mean(ω)
     push!(q.ξ, iter, ξ)
+    q.ω_rot = mean(ω)
 end
 
 
-function add_control(timestamp::Int64, q::DigitalQudit, gate::GateType, c::QuditControl)
-    # Adds an entry to this qudits control history for the provided gate
-    control_dict = q.control
-    push!(control_dict[gate], timestamp, c)
+
+function add_control(q::DigitalQudit, gate::GateType, 
+                     control_obj::AbstractControl; iter::Int64=-1)
+    # Adds an entry to this qudits control history for the provided gate.
+    # If timestamp 'iter' isn't provided, the control is added to the 
+    # history at 1 + {the latestest control timestamp}
+    if !haskey(q.controls, gate)
+        q.controls[gate] = QuditControl(control_obj)
+        randomize_coeffs(q.controls[gate])
+    else
+        push!(q.controls[gate], iter, c)
+    end
 end
 
 
-function run_control(q::DigitalQudit, q_control::QuditControl)
-    
+
+function run_control(q::DigitalQudit, q_control::QuditControl; Δt=0.2)
         
     # Initial states
-    N = q.Ne+q.Ng
+    N = q.Ne + q.Ng
     U0 = Matrix(1.0*I, N, q.Ne)
 
     # Set unscaled drift and control Hamiltonian
@@ -190,28 +204,27 @@ function run_control(q::DigitalQudit, q_control::QuditControl)
     H_c_im = a - a';
 
     # Extract control param
-    control_obj = get(q_control.objs)
+    iter, control_obj = last(q_control.objs)
     T_gate = control_obj.tf
-    control_coeffs = get(q_control.coeffs)
-    
+    _, control_coeffs = last(q_control.coeffs)
     
     # Extract qudit parameter
     ω_rot = q.ω_rot;
-    ω = get(q.ω)
-    ξ = get(q.ξ)
+    _, ω = last(q.ω)
+    _, ξ = last(q.ξ)
     n_samples = length(ω)
     n_timesteps = ceil(Int, T_gate/Δt)
-    
+
     # Run simulation for each parameter setting    
     Psi = zeros(Complex, n_samples, N, q.Ne)
-    for i = 1:n_samples
+    for j = 1:n_samples
         prob = SchrodingerProb(
-                    (ω[j]-ω_rot)*H_ω - 0.5*ξ[j]*H_ξ, 
+                    ((ω[j]-ω_rot)*H_ω) - (0.5*ξ[j]*H_ξ), 
                     [H_c_re], [H_c_im], 
                     U0, T_gate, n_timesteps
                 ) 
         state_history = eval_forward(prob, control_obj, control_coeffs)
-        Psi[i,:,:] = state_history[:,end,:]
+        Psi[j,:,:] = state_history[:,end,:]
     end
 
     return Psi
@@ -245,18 +258,18 @@ function optimize_control(
     # Extract control param
     q_control = q.controls[gate]
     max_amplitude = q_control.max_amplitude
-    control_obj = get(q_control.objs)
+    iter, control_obj = last(q_control.objs)
     T_gate = control_obj.tf
-    control_coeffs = get(q_control.coeffs)
+    _, control_coeffs = last(q_control.coeffs)
     
     # SchrodingerProb for each qudit param sample
     ω_rot = q.ω_rot;
-    ω = get(q.ω)
-    ξ = get(q.ξ)
+    _, ω = last(q.ω)
+    _, ξ = last(q.ξ)
     n_samples = length(ω)
     n_timesteps = ceil(Int, T_gate/Δt)
     probs = [  SchrodingerProb(
-                    (ω[j]-ω_rot)*H_ω - 0.5*ξ[j]*H_ξ, 
+                    ((ω[j]-ω_rot)*H_ω) .- (0.5*ξ[j]*H_ξ), 
                     [H_c_re], [H_c_im], 
                     U0, T_gate, n_timesteps
                 ) 
@@ -269,7 +282,6 @@ function optimize_control(
                         )
 
     # Save results     
-    iter = current_iteration(q)
     push!(q.infidelity[gate], iter, opt_ret_multiple.obj_val)
     control_coeffs .= opt_ret_multiple.x
 
