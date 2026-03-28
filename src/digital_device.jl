@@ -138,20 +138,20 @@ mutable struct DigitalQudit
     # FIELDS
     Ne::Int64                          # Number of essential energy levels
     Ng::Int64                          # Number of guard levels
-    ω_rot::Float64                     # Rotating frame frequency
-    ω::History{Int64, Vector{Float64}} # History of qubit frequency samples
-    ξ::History{Int64, Vector{Float64}} # History of qubit self-kerr samples
+    omega_rot::Float64                     # Rotating frame frequency
+    omega::History{Int64, Vector{Float64}} # History of qubit frequency samples
+    xi::History{Int64, Vector{Float64}} # History of qubit self-kerr samples
     controls::Dict{GateType, QuditControl}
     infidelity::Dict{GateType, History{Int, Float64}}
 
     # CONSTRUCTOR
     function DigitalQudit(Ne, Ng)
-        ω = History(Vector{Float64})
-        ξ = History(Vector{Float64})
-        ω_rot = 0
+        omega = History(Vector{Float64})
+        xi = History(Vector{Float64})
+        omega_rot = 0
         controls = Dict{GateType, QuditControl}()
         infidelity = Dict{GateType, History{Int, Float64}}()
-        new(Ne, Ng, ω_rot, ω, ξ, controls, infidelity)
+        new(Ne, Ng, omega_rot, omega, xi, controls, infidelity)
     end
 
 end
@@ -159,8 +159,8 @@ end
 
 function add_param_samples(
                     q::DigitalQudit, 
-                    ω::Vector{Float64}, 
-                    ξ::Vector{Float64};
+                    omega::Vector{Float64}, 
+                    xi::Vector{Float64};
                     iter::Int64=-1
     )
     # Appends a sample of frequencies and self-kerr coefficients 
@@ -168,9 +168,32 @@ function add_param_samples(
     #
     # By default, 'iter' is set to the latest iteration + 1
     # 
-    push!(q.ω, iter, ω)
-    push!(q.ξ, iter, ξ)
-    q.ω_rot = mean(ω)
+    push!(q.omega, iter, omega)
+    push!(q.xi, iter, xi)
+    q.omega_rot = mean(omega)
+end
+
+
+
+function update_param_samples(
+                    q::DigitalQudit, 
+                    omega::Vector{Float64}, 
+                    xi::Vector{Float64}
+    )
+    # Updates the sample frequencies and self-kerr coefficients 
+    # to this qudit's history at the latest timestamp in its history.
+    #
+    # Throws an error if the parameter histories are empty. 
+    #
+
+    if length(q.omega) == 0 || length(q.xi) == 0
+        throw("Cannot update parameters of empty qudit history!")
+    end
+
+    iter = q.omega.lastiter
+    push!(q.omega, iter, omega)
+    push!(q.xi, iter, xi)
+    q.omega_rot = mean(omega)
 end
 
 
@@ -189,41 +212,63 @@ function add_control(q::DigitalQudit, gate::GateType,
 end
 
 
+function get_schrodinger_problems(q::DigitalQudit, T, dt)
+    # Returns a Vector of SchrodingerProb objects, one for each 
+    # of this qudit's current parameter samples.
+    # Argument 'T' specifies the time integration interval [0,T]
+    # and dt is the stepsize
+    #
 
-function run_control(q::DigitalQudit, q_control::QuditControl; Δt=0.2)
-        
-    # Initial states
+    # Initial state
     N = q.Ne + q.Ng
     U0 = Matrix(1.0*I, N, q.Ne)
 
     # Set unscaled drift and control Hamiltonian
     a = lower_op(N) 
-    H_ω = a' * a 
-    H_ξ = a' * a' * a * a;
+    H_omega = a' * a 
+    H_xi = a' * a' * a * a;
     H_c_re = a + a';
     H_c_im = a - a';
+    
+    # Qudit parameters
+    omega_rot = q.omega_rot;
+    _, omega = last(q.omega)
+    _, xi = last(q.xi)
+    n_samples = length(omega)
 
-    # Extract control param
+    # Number of timesteps
+    n_timesteps = ceil(Int, T_gate/dt)
+
+    # Generating the SchrodingerProb
+    probs = [  SchrodingerProb(
+                    ((omega[j]-omega_rot)*H_omega) .- (0.5*xi[j]*H_xi), 
+                    [H_c_re], [H_c_im], 
+                    U0, T, n_timesteps
+                ) 
+                for j in 1:n_samples
+            ]
+    
+    return probs
+end
+
+
+
+function run_control(q::DigitalQudit, q_control::QuditControl; dt=0.2)
+    # Computes the terminal state Psi, for each of the qudit's current
+    # parameter settings, in response to the provided control signal
+
     iter, control_obj = last(q_control.objs)
     T_gate = control_obj.tf
     _, control_coeffs = last(q_control.coeffs)
     
-    # Extract qudit parameter
-    ω_rot = q.ω_rot;
-    _, ω = last(q.ω)
-    _, ξ = last(q.ξ)
-    n_samples = length(ω)
-    n_timesteps = ceil(Int, T_gate/Δt)
+    # Create a SchrodingerProb for each of the qudits param samples
+    probs = get_schrodinger_problems(q, T_gate, dt)  
+    n_probs = length(probs)  
 
     # Run simulation for each parameter setting    
-    Psi = zeros(Complex, n_samples, N, q.Ne)
-    for j = 1:n_samples
-        prob = SchrodingerProb(
-                    ((ω[j]-ω_rot)*H_ω) - (0.5*ξ[j]*H_ξ), 
-                    [H_c_re], [H_c_im], 
-                    U0, T_gate, n_timesteps
-                ) 
-        state_history = eval_forward(prob, control_obj, control_coeffs)
+    Psi = zeros(Complex, n_probs, N, q.Ne)
+    for j = 1:n_probs
+        state_history = eval_forward(probs[j], control_obj, control_coeffs)
         Psi[j,:,:] = state_history[:,end,:]
     end
 
@@ -235,46 +280,23 @@ end
 function optimize_control(
             q::DigitalQudit, 
             gate::GateType; 
-            Δt = 0.2,
+            dt = 0.2,
             options=["max_iter" => 100, "print_level" => 3] 
     )
     # Optimizes the control signals for this qudit to implement 
     # the provided 'gate'
 
-    # Initial states
-    N = q.Ne+q.Ng
-    U0 = Matrix(1.0*I, N, q.Ne)
+    U_target = unitary(gate, q.Ne)
 
-    # Select the gate  
-    U_target = unitary(gate, N);  
-
-    # Set unscaled drift and control Hamiltonian
-    a = lower_op(N) 
-    H_ω = a' * a 
-    H_ξ = a' * a' * a * a;
-    H_c_re = a + a';
-    H_c_im = a - a';
-
-    # Extract control param
+    # Extract control variables
     q_control = q.controls[gate]
     max_amplitude = q_control.max_amplitude
     iter, control_obj = last(q_control.objs)
     T_gate = control_obj.tf
     _, control_coeffs = last(q_control.coeffs)
     
-    # SchrodingerProb for each qudit param sample
-    ω_rot = q.ω_rot;
-    _, ω = last(q.ω)
-    _, ξ = last(q.ξ)
-    n_samples = length(ω)
-    n_timesteps = ceil(Int, T_gate/Δt)
-    probs = [  SchrodingerProb(
-                    ((ω[j]-ω_rot)*H_ω) .- (0.5*ξ[j]*H_ξ), 
-                    [H_c_re], [H_c_im], 
-                    U0, T_gate, n_timesteps
-                ) 
-                for j in 1:n_samples
-            ]
+    # Create a SchrodingerProb for each of the qudits param samples
+    probs = get_schrodinger_problems(q, T_gate, dt)    
 
     # Run the optimizer
     opt_ret_multiple = optimize_prob(
@@ -292,13 +314,18 @@ end
 
 
 ########################################################################
-# QUANTUM DIGITAL DEVICE
+# PAIRS OF DIGITAL QUDITS
 ########################################################################
 
-mutable struct DigitalDevice
+mutable struct DigitalQuditPair
 
     # FIELDS
-
+    qudit1::DigitalQudit
+    qudit2::DigitalQudit
+    xi::History{Int64,Float64}
+    J::History{Int64,Float64}
+    controls::Dict{GateType, QuditControl}
+    infidelity::Dict{GateType, History{Int, Float64}}
     
     # CONSTRUCTOR
 

@@ -52,34 +52,19 @@ mutable struct PhysicalQudit
     # FIELDS
     qudit::DigitalQudit
     M_spam::AbstractMatrix
-    n_readout_samples::Int64
     measured_state_infidelity::Dict{GateType, History{Int, Float64}}
     measured_population_infidelity::Dict{GateType, History{Int, Float64}}
     
-    # CONSTRUCTORS
-    function PhysicalQudit(qudit::DigitalQudit; M_spam_order=1e-3, n_readout_samples=1000)
-
-        # Generate the Mspam matrix
-        N = Ne + Ng;
-        ϵ = M_spam_order * rand(N)
-        M_spam = column_stochastic(ϵ)
-
-        # Fidelity histories
-        measured_state_infidelity = Dict{GateType, History{Int64, Float64}}()
-        measured_population_infidelity = Dict{GateType, History{Int64, Float64}}()
-
-        new(qudit, M_spam, n_readout_samples, measured_state_infidelity, measured_population_infidelity)
-
-    end
-
-
+    # CONSTRUCTOR
     function PhysicalQudit(
-                Ne::Int64, Ng::Int64, ω::Float64, ξ::Float64; M_spam_order=1e-3, n_readout_samples=1000
+                Ne::Int64, Ng::Int64, 
+                omega::Float64, xi::Float64;
+                M_spam_order=1e-3
         )
 
         # Generate the underlying Digitqudit
         qudit = DigitalQudit(Ne, Ng)
-        add_param_samples(qudit, [ω], [ξ])
+        add_param_samples(qudit, [omega], [xi])
 
         # Generate the Mspam matrix
         N = Ne + Ng;
@@ -90,18 +75,26 @@ mutable struct PhysicalQudit
         measured_state_infidelity = Dict{GateType, History{Int64, Float64}}()
         measured_population_infidelity = Dict{GateType, History{Int64, Float64}}()
 
-        new(qudit, M_spam, n_readout_samples, measured_state_infidelity, measured_population_infidelity)
+        new(
+            qudit, 
+            M_spam, 
+            measured_state_infidelity, 
+            measured_population_infidelity
+        )
 
     end
 
 end
 
 
-function measured_infidelity(
+
+function measure_infidelity(
         q::PhysicalQudit, 
         gate::GateType, 
         q_control::QuditControl, 
-        add_SPAM=true
+        n_readout_samples::Int64;
+        add_SPAM=true,
+        dt=0.2
     )
     # Computes the measured infidelities (state and population) of this qudit
     # for the given gate using the provided control signals
@@ -111,7 +104,7 @@ function measured_infidelity(
     U_target = unitary(gate, N)
 
     # Run the controls to get the final state
-    psi_final = run_control(q.qudit, q_control)
+    psi_final = run_control(q.qudit, q_control, dt=dt)
     psi_final = psi_final[1,:,:]
     # Normalize 
     psi_final = psi_final ./ norm.(eachcol(psi_final)) 
@@ -122,7 +115,10 @@ function measured_infidelity(
     # Population infidelity
     observed_populations = abs2.(psi_final)
     if add_SPAM
-        observed_populations = sample_quantum_state(q.n_readout_samples, q.M_spam * observed_populations)
+        observed_populations = sample_quantum_state(
+                                    n_readout_samples, 
+                                    q.M_spam * observed_populations
+                                )
     end
     population_infidelity = infidelity_population(
                                 observed_populations, 
