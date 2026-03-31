@@ -32,7 +32,7 @@ function unitary(gate::GateType, N::Int64)
     Ug = unitary(gate)
     N_gate = size(Ug,1)
     if N_gate < N
-        U = zeros(eltype(Ug), N,N_gate)
+        U = zeros(eltype(Ug), N, N_gate)
         U[1:N_gate,1:N_gate] = Ug
     else
         U = Ug
@@ -181,7 +181,7 @@ function update_param_samples(
                     xi::Vector{Float64}
     )
     # Updates the sample frequencies and self-kerr coefficients 
-    # to this qudit's history at the latest timestamp in its history.
+    # of this qudit's history at the latest timestamp in its history.
     #
     # Throws an error if the parameter histories are empty. 
     #
@@ -191,8 +191,8 @@ function update_param_samples(
     end
 
     iter = q.omega.lastiter
-    push!(q.omega, iter, omega)
-    push!(q.xi, iter, xi)
+    update!(q.omega, iter, omega)
+    update!(q.xi, iter, xi)
     q.omega_rot = mean(omega)
 end
 
@@ -286,7 +286,8 @@ function optimize_control(
     # Optimizes the control signals for this qudit to implement 
     # the provided 'gate'
 
-    U_target = unitary(gate, q.Ne)
+    N = q.Ne + q.Ng
+    U_target = unitary(gate, N)
 
     # Extract control variables
     q_control = q.controls[gate]
