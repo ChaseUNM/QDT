@@ -87,7 +87,6 @@ mutable struct PhysicalQudit
 end
 
 
-
 function measure_infidelity(
         q::PhysicalQudit, 
         gate::GateType, 

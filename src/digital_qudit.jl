@@ -1,136 +1,11 @@
 
 using LinearAlgebra, QuantumGateDesign, ValueHistories
-
-
-########################################################################
-# GATE TYPES
-########################################################################
-
-@enum GateType PauliX PauliY PauliZ Hadamard CNOT
-
-function unitary(gate::GateType)
-    # Returns the unitary associated with the gate
-    # as a 2x2 or 4x4 matrix
-    if gate == PauliX
-        return PauliX_gate()
-    elseif gate == PauliY
-        return PauliY_gate()
-    elseif gate == PauliZ
-        return PauliZ_gate()
-    elseif gate == Hadamard
-        return Hadamard_gate()
-    elseif gate == CNOT
-        return CNOT_gate()
-    else
-        throw("GateType::unitary() You shouldnt be here?")
-    end
-end
-
-
-function unitary(gate::GateType, N::Int64)
-    # Returns the unitary associated with the gate as an NxN matrix
-    Ug = unitary(gate)
-    N_gate = size(Ug,1)
-    if N_gate < N
-        U = zeros(eltype(Ug), N, N_gate)
-        U[1:N_gate,1:N_gate] = Ug
-    else
-        U = Ug
-    end
-    return U
-end
-
+include("gates.jl")
+include("controls.jl")
+include("util.jl")
 
 ########################################################################
-# QUDIT CONTROL
-########################################################################
-
-mutable struct QuditControl
-
-    ### FIELDS
-    max_amplitude::Float64
-    objs::History{Int64, AbstractControl}
-    coeffs::History{Int64, Vector{Float64}}
-    
-    ### CONSTRUCTORS
-
-    function QuditControl(;max_amplitude=0.1)
-        objs = History(AbstractControl)
-        coeffs = History(Vector{Float64})
-        new(max_amplitude, objs, coeffs)
-    end
-
-    function QuditControl(c::AbstractControl; iter=0, max_amplitude=0.1)
-        objs = History(AbstractControl)
-        push!(objs, c)
-        coeffs = History(Vector{Float64})
-        new(max_amplitude, objs, coeffs)
-    end
-
-end   
-
-
-function lastiter(c::QuditControl)
-    # Returns the timestamp of the last control logged in 
-    # this object's history
-    return max(c.objs.lastiter, 0) 
-end
-
-
-
-function randomize_coeffs(c::QuditControl)
-    # Sets the spline coefficients of this control the values
-    # drawn from U[-0.5,0.5] * max_amplitude
-
-    # Verify the control already has an entry that we can
-    # build off of
-    if length(c.coeffs) == 0 && length(c.objs) == 0
-        throw("Empty QubitControl cannot be randomized")
-    end
-
-    iter, control_obj = last(c.objs)
-    N_coeff = control_obj.N_coeff
-
-    # Generate the first set of random coefficients
-    if c.coeffs.lastiter < iter
-        coefs = (0.5 .- rand(N_coeff)) .* c.max_amplitude
-        push!(c.coeffs, iter, coefs)
-
-    # Randomize existing coefficients
-    else 
-        coefs = c.coeffs.values[end]
-        coefs .= (0.5 .- rand(N_coeff)) .* c.max_amplitude
-    end
-    
-end
-
-
-
-function randomize(iter::Int64, c::QuditControl)
-    # Sets the spline coefficients of this control the values
-    # drawn from U[-0.5,0.5] * max_amplitude
-
-    # Verify the control already has an entry that we can
-    # build off of
-    if length(c.coeffs) == 0
-        throw("Empty QubitControl cannot be initialized")
-    end
-
-    # Pointer to the previous control object
-    last_obj = last(c.objs)
-    push!(c, iter, last_obj)
-
-    # Randomize the coefficients
-    N_coeff = size(last(c.spline_coeffs))
-    new_coeffs = (0.5 .- rand(N_coeff)) .* c.max_amplitude
-    push!(c.coeffs, iter, new_coeffs) 
-
-end
-
-
-
-########################################################################
-# QUDITs themselves
+# DigitalQudit struct
 ########################################################################
 
 mutable struct DigitalQudit
@@ -157,6 +32,24 @@ mutable struct DigitalQudit
 end
 
 
+########################################################################
+# SETTING/UPDATING PARAMETERS
+########################################################################
+
+
+function num_samples(q::DigitalQudit)
+    # Returns the number of parameter samples at the latest 
+    # timestamp/iteration in this qudit's history
+    n_samples_omega = length(q.omega.values[end])
+    n_samples_xi    = length(q.xi.values[end])
+    # Verify the number of samples are identical
+    if n_samples_omega != n_samples_xi
+        throw("DigitalQudit::Number of omega and xi samples do no match!")
+    end
+    return n_samples_omega
+end
+
+
 function add_param_samples(
                     q::DigitalQudit, 
                     omega::Vector{Float64}, 
@@ -171,6 +64,15 @@ function add_param_samples(
     push!(q.omega, iter, omega)
     push!(q.xi, iter, xi)
     q.omega_rot = mean(omega)
+end
+
+function add_param_samples(q::DigitalQudit, 
+                           omega::Float64, xi::Float64; 
+                           kwargs...
+    )
+    # Overloaded version of the above function to work with 
+    # omega and xi as floats rather than vectors of floats
+    add_param_samples(q, [omega], [xi], kwargs...)
 end
 
 
@@ -212,6 +114,50 @@ function add_control(q::DigitalQudit, gate::GateType,
 end
 
 
+
+########################################################################
+# SIMULATION ROUTINES
+########################################################################
+
+function get_drift_hamiltonians(q::DigitalQudit)
+    # Returns a Vector of Matrices representing the drift
+    # Hamiltonian (in the rotating frame) for each of this 
+    # qudit's current parameter samples
+
+    N = q.Ne + q.Ng
+
+    # Set unscaled drift Hamiltonian
+    a = lower_op(N) 
+    H_omega = a' * a 
+    H_xi = a' * a' * a * a;
+
+    # Qudit parameters
+    omega_rot = q.omega_rot;
+    _, omega = last(q.omega)
+    _, xi = last(q.xi)
+    n_samples = length(omega)
+
+    # Scaled Hamiltonians
+    H_drift = [
+        ((omega[j]-omega_rot)*H_omega) .- (0.5*xi[j]*H_xi)
+        for j = 1:n_samples
+    ]
+    
+    return H_drift
+end
+
+
+function get_control_hamiltonians(q::DigitalQudit)
+    # Returns the (unscaled) control Hamiltonians a + a'
+    # and a-a' for this qudit
+    N = q.Ne + q.Ng
+    a = lower_op(N) 
+    H_c_re = a + a';
+    H_c_im = a - a';
+    return H_c_re, H_c_im
+end
+
+
 function get_schrodinger_problems(q::DigitalQudit, T, dt)
     # Returns a Vector of SchrodingerProb objects, one for each 
     # of this qudit's current parameter samples.
@@ -220,32 +166,23 @@ function get_schrodinger_problems(q::DigitalQudit, T, dt)
     #
 
     # Initial state
-    N = q.Ne + q.Ng
-    U0 = Matrix(1.0*I, N, q.Ne)
+    U0 = gate_initial_states(N, q.Ne)
 
-    # Set unscaled drift and control Hamiltonian
-    a = lower_op(N) 
-    H_omega = a' * a 
-    H_xi = a' * a' * a * a;
-    H_c_re = a + a';
-    H_c_im = a - a';
-    
-    # Qudit parameters
-    omega_rot = q.omega_rot;
-    _, omega = last(q.omega)
-    _, xi = last(q.xi)
-    n_samples = length(omega)
+    # Drift Hamiltonian by parameter sample
+    H_drift = get_drift_hamiltonians(q)
+
+    # Unscaled control Hamiltonian
+    H_c_re, H_c_im = get_control_hamiltonians(q)
 
     # Number of timesteps
-    n_timesteps = ceil(Int, T_gate/dt)
+    n_timesteps = ceil(Int, T/dt)
 
     # Generating the SchrodingerProb
     probs = [  SchrodingerProb(
-                    ((omega[j]-omega_rot)*H_omega) .- (0.5*xi[j]*H_xi), 
-                    [H_c_re], [H_c_im], 
+                    H_drift[j], [H_c_re], [H_c_im], 
                     U0, T, n_timesteps
                 ) 
-                for j in 1:n_samples
+                for j in 1:length(H_drift)
             ]
     
     return probs
@@ -310,24 +247,3 @@ function optimize_control(
 
 end
 
-
-
-
-
-########################################################################
-# PAIRS OF DIGITAL QUDITS
-########################################################################
-
-mutable struct DigitalQuditPair
-
-    # FIELDS
-    qudit1::DigitalQudit
-    qudit2::DigitalQudit
-    xi::History{Int64,Float64}
-    J::History{Int64,Float64}
-    controls::Dict{GateType, QuditControl}
-    infidelity::Dict{GateType, History{Int, Float64}}
-    
-    # CONSTRUCTOR
-
-end
