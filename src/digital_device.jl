@@ -68,7 +68,7 @@ end
 
 function update_param_samples(
                     self::DigitalQuditPair, 
-                    xi::Vector{Float64};
+                    xi::Vector{Float64},
                     J::Vector{Float64}
     )
     # Updates the sample cross-Kerr and Jaynes-Cummings coupling 
@@ -318,6 +318,5 @@ function optimize_control(
     n_coeffs1 = length(control_coeffs1)
     control_coeffs1 .= opt_ret_multiple.x[1:n_coeffs1]
     control_coeffs2 .= opt_ret_multiple.x[n_coeffs1+1:end]
-
 end
 

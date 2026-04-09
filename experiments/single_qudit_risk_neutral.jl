@@ -1,6 +1,7 @@
 using LinearAlgebra, QuantumGateDesign, Random, Distributions, Printf
 using Plots, Plots.Measures, LaTeXStrings, Plots.PlotMeasures
-include("../src/digital_device.jl")
+include("../src/digital_qudit.jl")
+include("../src/util.jl")
 
 ############################################################################# 
 # PARAMETERS
@@ -14,8 +15,8 @@ omega_bias = 0.002
 omega_stdev = 0.001 * omega
 xi = 0.2
 xi_bias = 0.0
-xi_stdev = 0.001 * xi
-n_samples = 100
+xi_stdev = 0.01 * xi
+n_samples = 50
 
 # Gates
 gates = [PauliX, PauliY, PauliZ]
@@ -27,10 +28,6 @@ degree = 2
 n_splines = 6
 n_iters_opt = 100
 seed = 3141
-
-# Physical Qudit
-M_spam_order = 1e-3
-n_readout_samples = 2000
 
 ############################################################################# 
 # SETUP
@@ -45,8 +42,8 @@ q = DigitalQudit(Ne, Ng)
 N = Ne + Ng
 
 # Initial parameter samples
-omega_samples = sort(rand(omega_sampler, n_samples))
-xi_samples = sort(rand(xi_sampler, n_samples))
+omega_samples = rand(omega_sampler, n_samples)
+xi_samples = rand(xi_sampler, n_samples)
 add_param_samples(q, omega_samples, xi_samples)
 
 # Create a control for each gate
@@ -55,7 +52,7 @@ for i = 1:N_gates
     qcontrol = FortranBSplineControl(degree, n_splines, T_gate)
     add_control(q, gates[i], qcontrol)
     # Infidelities for this gate
-    q.infidelity[gates[i]] = History(Float64)
+    q.infidelity[gates[i]] = History(Vector{Float64})
 end
 
 ############################################################################# 
@@ -63,20 +60,13 @@ end
 #############################################################################
 
 for i = 1:N_gates
-    optimize_control(q, gates[i])
+    optimize_control(q, gates[i], 
+                        options=["max_iter" => n_iters_opt, "print_level" => 5, "limited_memory_max_history" => 250])
 end
 
-# Fidelity for each parameter sample
-dt = 0.005
-predicted_infidelity = zeros(N_gates, n_samples)
+infidelities_at_samples = zeros(N_gates, n_samples)
 for i = 1:N_gates
-    Psi = run_control(q, q.controls[gates[i]], dt=dt)
-    U = unitary(gates[i], Ne+Ng)
-    for j = 1:n_samples
-        Psi_j = Psi[j,:,:]
-        foreach(normalize!, eachcol(Psi_j))
-        predicted_infidelity[i,j] = infidelity(Psi_j, U, Ne)
-    end
+    infidelities_at_samples[i,:] = q.infidelity[gates[i]].values[end]
 end
 
 ############################################################################# 
@@ -85,7 +75,7 @@ end
 
 dt = 0.005
 n_pts = 25
-domega = 3*omega_stdev
+domega = 3*0.001*omega
 dxi = xi/10
 
 omegas = collect(LinRange(omega-domega,omega+domega,n_pts))
@@ -100,7 +90,7 @@ for i = 1:N_gates
         # Set the digital device to use parameters (omega[j], xi[k]), k = 1, ..., n_pts
         omega_j = omegas[j] * ones(n_pts)
         update_param_samples(q, omega_j, xis)
-        q.omega_rot = mean(omega_samples)
+        q.omega_rot = mean(omega_samples) # Use the same rotatining frame frequency as the initial set of samples, as this is the frame in which the controls where optimized in
         # Compute the gate fidelity for each of these parameter samples
         Psi_j = run_control(q, q.controls[gates[i]], dt=dt)
         for k = 1:n_pts
@@ -111,9 +101,9 @@ for i = 1:N_gates
     end
 end
 
-c_min = minimum(infidelities)
-c_max = maximum(infidelities)
-ticks = [1e-6, 1e-4, 1e-2, 1e0]
+c_min = 5e-6
+c_max = 1.0
+ticks = [1e-5, 1e-3, 1e-1]
 
 # Plot Infidelities vs parameter value
 subplots = Any[]
@@ -123,21 +113,27 @@ for i = 1:N_gates
     p_i = plot(
             title= LaTeXString(title_str), 
             titlefontsize=16, 
-            xlabel=L"Frequency $\omega$", xlabelfontsize=14,
-            ylabel=L"Self-Kerr $\xi$", ylabelfontsize=14, 
-            size=(500,450), dpi=512,
+            xlabel=L"Frequency Error $(\omega-\omega_*)/\omega_*$", xlabelfontsize=14,
+            ylabel=L"Self-Kerr Error $(\xi-\xi_*)/\xi_*$", ylabelfontsize=14, 
+            size=(600,500), dpi=512,
             right_margin = 10Plots.mm
         )
 
     heatmap!(
-        omegas, 
-        xis, 
+        (omegas .- omega) ./ omega, 
+        (xis .- xi) ./ xi, 
         infidelities[i,:,:]', 
         colorbar_scale=:log10, colorbar_ticks=ticks, 
         clim=(c_min,c_max)
     )
 
     push!(subplots, p_i)
+
+    filename = @sprintf(
+                    "figures/single_qudit_risk_neutral_%s.svg", 
+                    gate_names[i]
+                )
+    # savefig(p_i, filename)
 
 end
 

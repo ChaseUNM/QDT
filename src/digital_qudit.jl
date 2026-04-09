@@ -17,7 +17,7 @@ mutable struct DigitalQudit
     omega::History{Int64, Vector{Float64}} # History of qubit frequency samples
     xi::History{Int64, Vector{Float64}} # History of qubit self-kerr samples
     controls::Dict{GateType, QuditControl}
-    infidelity::Dict{GateType, History{Int, Float64}}
+    infidelity::Dict{GateType, History{Int, Vector{Float64}}}
 
     # CONSTRUCTOR
     function DigitalQudit(Ne, Ng)
@@ -25,7 +25,7 @@ mutable struct DigitalQudit
         xi = History(Vector{Float64})
         omega_rot = 0
         controls = Dict{GateType, QuditControl}()
-        infidelity = Dict{GateType, History{Int, Float64}}()
+        infidelity = Dict{GateType, History{Int, Vector{Float64}}}()
         new(Ne, Ng, omega_rot, omega, xi, controls, infidelity)
     end
 
@@ -166,6 +166,7 @@ function get_schrodinger_problems(q::DigitalQudit, T, dt)
     #
 
     # Initial state
+    N = q.Ne + q.Ng
     U0 = gate_initial_states(N, q.Ne)
 
     # Drift Hamiltonian by parameter sample
@@ -203,7 +204,7 @@ function run_control(q::DigitalQudit, q_control::QuditControl; dt=0.2)
     n_probs = length(probs)  
 
     # Run simulation for each parameter setting    
-    Psi = zeros(Complex, n_probs, N, q.Ne)
+    Psi = zeros(Complex, n_probs, q.Ne+q.Ng, q.Ne)
     for j = 1:n_probs
         state_history = eval_forward(probs[j], control_obj, control_coeffs)
         Psi[j,:,:] = state_history[:,end,:]
@@ -218,6 +219,7 @@ function optimize_control(
             q::DigitalQudit, 
             gate::GateType; 
             dt = 0.2,
+            dt_eval_fidelity = 0.01,
             options=["max_iter" => 100, "print_level" => 3] 
     )
     # Optimizes the control signals for this qudit to implement 
@@ -234,16 +236,33 @@ function optimize_control(
     _, control_coeffs = last(q_control.coeffs)
     
     # Create a SchrodingerProb for each of the qudits param samples
-    probs = get_schrodinger_problems(q, T_gate, dt)    
+    probs = get_schrodinger_problems(q, T_gate, dt)
+    n_probs = length(probs)    
 
     # Run the optimizer
     opt_ret_multiple = optimize_prob(
                             probs, control_obj, control_coeffs, U_target, pcof_lbound=-max_amplitude, pcof_ubound=max_amplitude, cost_type=:Infidelity, ipopt_options=options
                         )
-
-    # Save results     
-    push!(q.infidelity[gate], iter, opt_ret_multiple.obj_val)
+    # Save the new control coefficients
     control_coeffs .= opt_ret_multiple.x
+
+    # Eval the final infidelities at each parameter    
+    if dt_eval_fidelity != dt
+        probs = get_schrodinger_problems(q, T_gate, dt_eval_fidelity)
+    end
+    infidelities = zeros(n_probs)
+    for j = 1:n_probs
+        Psi = eval_forward(probs[j], control_obj, control_coeffs)[:,end,:]
+        foreach(normalize!, eachcol(Psi))
+        infidelities[j] = infidelity(Psi, U_target, q.Ne)
+    end
+
+    # Save results  
+    if iter == q.infidelity[gate].lastiter
+        q.infidelity[gate].values[end] = infidelities
+    else
+        push!(q.infidelity[gate], iter, infidelities)
+    end
 
 end
 

@@ -1,6 +1,9 @@
 using LinearAlgebra, Random, Distributions
 include("qdt.jl")
 
+########################################################################
+########################################################################
+
 function column_stochastic(ϵ::Array{Float64})
     # Creates an column stochastic matrix M[i,j] with diagonal elements
     # M[i,i] = 1 - ϵ[i], i = 1, 2, ..., length(ϵ), and off diagonal 
@@ -51,6 +54,10 @@ end
 
 
 function measured_infidelity(qdt::QDT, true_parameter; add_SPAM=true)
+    #
+    #
+    #
+    #
     real_control_ops = [0 1; 1 0]
     imag_control_ops = [0 1; -1 0]
     N_gates = qdt.N_gates 
@@ -70,17 +77,13 @@ function measured_infidelity(qdt::QDT, true_parameter; add_SPAM=true)
         final_state = meas_state_history[:,end,:]
         # Normalize the columns
         final_state = final_state ./ norm.(eachcol(final_state))'
-        
+
         final_state_abs = abs2.(final_state)
         final_gate_unitary = gate_set[i]*U0 
         
         final_gate_abs = abs2.(final_gate_unitary)
-        # display(final_state_abs)
-        # display(sum(final_state_abs[1,:]))
-        # display(sum(final_state_abs[2,:]))
-        # display(final_state_abs)
-
-        # Add readout noise
+        
+        # Add readout noise?
         if add_SPAM
             M_spam_i = qdt.Mspam_matrices[1]
             p_hat = M_spam_i*final_state_abs
@@ -88,11 +91,7 @@ function measured_infidelity(qdt::QDT, true_parameter; add_SPAM=true)
         else
             observed_final_state = final_state_abs
         end
-        # observed_final_state = noisy_observation(epsilon_vec, samples, final_state_abs)
-        # println("Measured state")
-        # display(observed_final_state)
-        # println("Gate")
-        # display(final_gate_abs)
+        
         qdt.measured_population_infidelity[i] = infidelity_population(observed_final_state, final_gate_abs)
         qdt.measured_state_infidelity[i] = infidelity(
                                                     observed_final_state, 

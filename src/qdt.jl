@@ -16,6 +16,7 @@ mutable struct QDT
     omega_rot::Float64
     param_samples::Vector{Float64}
     n_param_samples::Int64
+    
     real_control_op::AbstractMatrix
     imag_control_op::AbstractMatrix
 
@@ -39,9 +40,6 @@ mutable struct QDT
     readout_samples::Int64 
     Mspam_order::Float64
     Mspam_matrices::Vector{Matrix{Float64}}
-
-
-
 
     function QDT(   N, Ne, Ng, 
                     omega_rot, 
