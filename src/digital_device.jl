@@ -248,8 +248,6 @@ function run_control(
     # parameter settings, in response to the provided control signal
 
     # Extract control variables
-    q1_control = self.controls[gate][1]
-    q2_control = self.controls[gate][2]
     _, control_obj1 = last(q1_control.objs)
     _, control_obj2 = last(q2_control.objs)
     T_gate = control_obj1.tf
@@ -311,12 +309,16 @@ function optimize_control(
                             probs, [control_obj1, control_obj2], [control_coeffs1; control_coeffs2], U_target, 
                             pcof_lbound=-max_amplitude, pcof_ubound=max_amplitude, cost_type=:Infidelity, ipopt_options=options
                         )
-
-    # Save Infidelity     
-    push!(self.infidelity[gate], iter, opt_ret_multiple.obj_val)
-    # Save updated spline coefficients
+    # Save the new control coefficients
     n_coeffs1 = length(control_coeffs1)
     control_coeffs1 .= opt_ret_multiple.x[1:n_coeffs1]
     control_coeffs2 .= opt_ret_multiple.x[n_coeffs1+1:end]
+
+    # Save Infidelity     
+    if iter == self.infidelity[gate].lastiter
+        self.infidelity[gate].values[end] = opt_ret_multiple.obj_val
+    else
+        push!(self.infidelity[gate], iter, opt_ret_multiple.obj_val)
+    end
 end
 
