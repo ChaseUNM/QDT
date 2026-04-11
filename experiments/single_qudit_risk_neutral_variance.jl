@@ -62,6 +62,10 @@ function parse_commandline()
             help = "Number of independent trials to perform"
             arg_type = Int
             default = 2
+        "--n-omega-eval"
+            help = "Number of frequencies used to estimate gate infidelity distribution post optimization"
+            arg_type = Int
+            default = 1024
         "--seed"
             help = "Seed for the global RNG"
             arg_type = Int
@@ -76,6 +80,8 @@ end
 ###################################################################
 
 function main()
+
+    t_main_start = time()
 
     parsed_args = parse_commandline()
 
@@ -105,11 +111,11 @@ function main()
     end
 
     # Range of omega values over which to eval fidelity
-    n_omega_eval = 150
+    n_omega_eval = parsed_args["n-omega-eval"]
     d_omega = 2 * omega_stdev  
     omega_min = omega - d_omega
     omega_max = omega + d_omega
-    dt_eval_fidelity = 0.05
+    dt_eval_fidelity = 0.01
 
     # Number of times at which to evaluate the control functions
     # for plotting
@@ -127,8 +133,15 @@ function main()
     omega_sampler = Normal(omega, omega_stdev)
 
     # Range of omegas over which to eval infidelities
-    omegas_eval = collect(LinRange(omega_min,omega_max,n_omega_eval))
-    xi_eval = xi * ones(n_omega_eval) # No variance in self-kerr
+    omega_range = collect(LinRange(omega_min,omega_max,n_omega_eval))
+
+    # Larger set of omega samples used to estimate infidelity distributions
+    omega_large_sample_set = sort(rand(omega_sampler, n_omega_eval))
+
+    # Combine the above into a single set of omegas
+    # so we can more easily evaluate fidelities on it
+    omegas_eval = [omega_range; omega_large_sample_set]
+    xi_eval = xi * ones(2*n_omega_eval) # No variance in self-kerr
 
     # Create a Qudit
     q = DigitalQudit(Ne, Ng)
@@ -151,7 +164,7 @@ function main()
 
     controls = zeros(n_trials, n_gates, 2, n_t_eval)
     control_coeffs = zeros(n_trials, n_gates, degree*n_splines)
-    infidelities = zeros(n_trials, n_gates, n_omega_eval)
+    infidelities = zeros(n_trials, n_gates, 2*n_omega_eval)
     omega_samples = zeros(n_trials, n_samples)
 
     for t = 1:n_trials
@@ -191,9 +204,10 @@ function main()
         # Set the parameter samples to be evenly spaced between
         # omega_min and omega_max
         update_param_samples(q, omegas_eval, xi_eval)
-        q.omega_rot = mean(omega_samples[t,:]) # Use the same rotatining frame frequency as the initial set of samples, as this is the frame in which the controls where optimized in
+        q.omega_rot = mean(omega_samples[t,:]) # Use the same rotatining frame frequency as the initial set of samples, as this is the frame in which the controls where optimized
 
         # Measure fidelity over grid of omega values
+        # and the larger set of samples
         for i = 1:n_gates
             @printf("  Evaluating Gate %d of %d\n", i, n_gates)
             U = unitary(gates[i], Ne+Ng) 
@@ -202,15 +216,23 @@ function main()
                     q.controls[gates[i]], 
                     dt=dt_eval_fidelity
                 )
-            for k = 1:n_omega_eval
+            for k = 1:(2*n_omega_eval)
                 Psi_k = Psi[k,:,:]
                 foreach(normalize!, eachcol(Psi_k))
                 infidelities[t,i,k] = infidelity(Psi_k, U, Ne)
             end
         end
         t_end = time()
-        @printf("Done. Runtime = %.0f s\n", t_end-t_start)
+        @printf("Done. Trial Runtime = %.2f min\n", 
+                (t_end-t_start)/60)
+        @printf("Program Elapsed Time = %.2f min\n", 
+                (t_end-t_main_start)/60)
+        
     end
+
+    # Split infidelities array into two pieces
+    infidelity_vs_omega = infidelities[:,:,1:n_omega_eval]
+    infidelity_samples    = infidelities[:,:,n_omega_eval+1:end]
 
     ##############################################################
     # SAVE DATA TO FILE
@@ -229,12 +251,14 @@ function main()
             Ne, Ng, omega, xi,  
             T_gate, degree, n_splines,  
             omega_stdev, n_samples, omega_samples, seed, 
-            omegas_eval, 
-            controls, control_coeffs, infidelities)
+            controls, control_coeffs,
+            omega_range, infidelity_vs_omega,
+            omega_large_sample_set, infidelity_samples,  
+    )
 
 
     ##############################################################
-    # PLOT INFIDELITIES
+    # PLOT INFIDELITIES VS OMEGA
     ##############################################################
 
     c_min = 1e-5
@@ -245,22 +269,22 @@ function main()
     gate_names = ["X", "Y", "Z"]
     for i = 1:n_gates
         title_str = @sprintf(
-                        "Fidelity by Trial, \$%s\$ Gate", 
+                        "Infidelity by Trial, \$%s\$ Gate", 
                         gate_names[i]
                     )
         p_i = plot(
                 title= LaTeXString(title_str), 
                 titlefontsize=16, 
                 xlabel=L"Frequency Error $(\omega-\omega_*)/\omega_*$", xlabelfontsize=14,
-                ylabel="Infidelity (Predicted)", ylabelfontsize=14, 
+                ylabel="Digital Gate Infidelity", ylabelfontsize=14, 
                 size=(600,500), dpi=512, 
                 ylim=(c_min,c_max), yscale=:log10,
                 right_margin = 10mm
             )
         for t = 1:n_trials
             plot!(
-                (omegas_eval .- omega) ./ omegas_eval,
-                infidelities[t,i,:],
+                (omega_range .- omega) ./ omega,
+                infidelity_vs_omega[t,i,:],
                 color=:blue, alpha=0.5, legend=false
             )
         end
@@ -275,7 +299,6 @@ function main()
         bottom_margin=10mm, top_margin=10mm
     )
 
-
     # Create figure output directory
     fig_dir = "./figures/single_qudit_risk_neutral_variance"
     mkpath(fig_dir)
@@ -285,8 +308,50 @@ function main()
         "N%d+%d_stdev%.1e_samples%d_trials%d_seed%d",
         Ne, Ng, omega_stdev, n_samples, n_trials, seed
     )
-    fig_path = joinpath(fig_dir, file_prefix * "_infidelities.svg")
+    fig_path = joinpath(fig_dir, file_prefix * "_infidelity_vs_omega.svg")
     savefig(f1, fig_path)
+
+
+    ##############################################################
+    # PLOT INFIDELITIES HISTOGRAM
+    ##############################################################
+
+    # Histogram of infidelities by gate
+    subplots = Any[]
+    for i = 1:n_gates
+        title_str = @sprintf(
+                        "Infidelity by Trial, \$%s\$ Gate", 
+                        gate_names[i]
+                    )
+        p_i = plot(
+                title= LaTeXString(title_str), 
+                titlefontsize=16, 
+                xlabel=L"Log Gate Infidelity $\log_{10}[\mathcal{I}]$", xlabelfontsize=14,
+                ylabel=L"Est. Density $\pi(\log_{10}[\mathcal{I}])$", ylabelfontsize=14, 
+                size=(600,500), dpi=512, 
+                right_margin = 10mm
+            )
+        for t = 1:n_trials
+            stephist!(
+                log10.(infidelity_samples[t,i,:]),
+                normalize=:pdf, legend=false,
+                linewidth=2.5, alpha=0.5
+            )
+        end
+
+        push!(subplots, p_i)
+
+    end
+
+    f = plot(
+        subplots[1], subplots[2], subplots[3],
+        layout=(1,3), size=(1500,500), dpi=512, 
+        bottom_margin=10mm, top_margin=10mm
+    )
+
+    # Saving to file
+    fig_path = joinpath(fig_dir, file_prefix * "_infidelity_distribution.svg")
+    savefig(f, fig_path)
 
 
 

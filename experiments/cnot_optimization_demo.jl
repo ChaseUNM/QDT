@@ -23,7 +23,7 @@ T_gate = 550
 degree = 2
 n_splines = 6
 # carrier_freqs = [0, xi12, 2*xi12]
-carrier_freqs = [0, xi12]
+carrier_freqs = [0, xi12, 2*xi12]
 
 # Optimization params
 n_iters_opt = 100
