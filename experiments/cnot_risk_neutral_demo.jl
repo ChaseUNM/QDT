@@ -55,9 +55,13 @@ function parse_commandline()
             arg_type = Float64
             default = 1E-3
         "--samples"
-            help = "Number of parameter samples per trial"
+            help = "Number of parameter samples"
             arg_type = Int
             default = 10
+        "--samples-eval"
+            help = "Number of parameter samples used for control evaluation"
+            arg_type = Int
+            default = 500
         ##### GATES ####
         "--T-gate"
             help = "Gate duration"
@@ -142,6 +146,7 @@ function main()
     xi_cross_stdev  = parsed_args["xi-cross-stdev"]
     J12_stdev       = 0
     n_samples       = parsed_args["samples"]
+    n_samples_eval  = parsed_args["samples-eval"]
     seed = parsed_args["seed"] # rng seed
     if seed < 1
         seed = Int(rand(UInt16))
@@ -160,9 +165,29 @@ function main()
     warmup_samples = parsed_args["warmup-samples"]
     warmup_samples = min(warmup_samples, n_samples)
 
+
+    ############################################################
+    # REDIRECT STDOUT
+    ############################################################
+
+    output_dir = "./data/cnot_risk_neutral_demo"
+    mkpath(output_dir)
+
+    filename_prefix = @sprintf(
+        "N%d+%d_stdev%.1e_samples%d_harmonics%d_seed%d_warmup%dx%d_iters%d",
+        Ne, Ng, omega_stdev, n_samples, n_harmonics, 
+        seed, warmup_samples, warmup_iters, opt_iters
+    )
+
+    filename = joinpath(output_dir, filename_prefix*".out")
+    output_file = open(filename, "w")
+    redirect_stdout(output_file)
+
+    # Write experiment config to file
     for (key, value) in parsed_args
         @printf("%s => %s\n", key, string(value))
     end
+    flush(stdout)
 
     ############################################################
     # SETUP
@@ -186,6 +211,13 @@ function main()
     xi2_samples   = rand(xi2_sampler, n_samples)
     xi12_samples  = rand(xi12_sampler, n_samples)
     J12_samples   = rand(J12_sampler, n_samples)
+    opt_samples = Dict(
+        "omega1" => copy(omega1_samples),
+        "omega2" => copy(omega2_samples),
+        "xi1"    => copy(xi1_samples),
+        "xi2"    => copy(xi2_samples),
+        "xi12"   => copy(xi12_samples)
+    )
 
     # Create two digital qudits
     q1 = DigitalQudit(Ne, Ng)
@@ -212,6 +244,7 @@ function main()
     ################################################################
 
     @printf("\n\n======== CONTROL WARM-UP ========\n")
+    flush(stdout)
 
     t_warmup_start = time()
 
@@ -280,6 +313,7 @@ function main()
     end
 
     @printf("\nWarm-up Runtime: %.2f s\n", time()-t_warmup_start)
+    flush(stdout)
 
     ################################################################# RISK NEUTRAL OPTIMIZATION
     ################################################################
@@ -287,6 +321,7 @@ function main()
     t_optim_start = time()
 
     @printf("\n\n======== RISK NEUTRAL CONTROL ========\n")
+    flush(stdout)
 
     # Set the digital device parameters to store the samples
     update_param_samples(q1, omega1_samples, xi1_samples)
@@ -322,49 +357,81 @@ function main()
                     T_gate, n_t_eval
                 )
 
+    @printf("\nOptimization Runtime: %.2f s\n", time()-t_optim_start)
+    flush(stdout)
+
+    ############################################################
+    # EVAL CONTROLS ON LARGER SAMPLE SET
+    ############################################################
+    
+    @printf("\n\n======== CONTROL EVALUATION ========\n")
+    flush(stdout)
+
+    # Generate a larger sample set
+    omega1_samples = rand(omega1_sampler, n_samples_eval)
+    omega2_samples = rand(omega2_sampler, n_samples_eval)
+    xi1_samples    = rand(xi1_sampler,    n_samples_eval)
+    xi2_samples    = rand(xi2_sampler,    n_samples_eval)
+    xi12_samples   = rand(xi12_sampler,   n_samples_eval)
+    J12_samples    = rand(J12_sampler,    n_samples_eval)
+    eval_samples = Dict(
+        "omega1" => omega1_samples,
+        "omega2" => omega2_samples,
+        "xi1"    => xi1_samples,
+        "xi2"    => xi2_samples,
+        "xi12"   => xi12_samples
+    )
+
+    # Add this sample set to the digit QC components
+    update_param_samples(q1, omega1_samples, xi1_samples)
+    update_param_samples(q2, omega2_samples, xi2_samples)
+    update_param_samples(pair, xi12_samples, J12_samples) 
+
+    # Set the rotating frequencies of the qubits to the means of the original samples
+    q1.omega_rot = omega_mean[1]
+    q2.omega_rot = omega_mean[2]
+
+    # Evaluating the controls
     # Fidelity for each parameter sample
-    dt = 0.005
+    dt = 0.01
     Psi = run_control(pair, 
                     pair.controls[CNOT][1], 
                     pair.controls[CNOT][2], 
                     dt=dt)
-    infidelities = zeros(n_samples)
+    infidelities = zeros(n_samples_eval)
     U = unitary(CNOT, Ne+Ng)
-    for j = 1:n_samples
+    for j = 1:n_samples_eval
         Psi_j = Psi[j,:,:]
         foreach(normalize!, eachcol(Psi_j))
         infidelities[j] = infidelity(Psi_j, U, Ne*Ne)
+        if mod(j,10) == 0
+            @printf("... %d of %d samples done\n", j, n_samples_eval)
+            flush(stdout)
+        end
     end
 
-    @printf("\nOptimization Runtime: %.2f s\n", time()-t_optim_start)
 
     ############################################################
     # SAVE DATA TO FILE
     ############################################################
 
-    output_dir = "./data/cnot_risk_neutral_demo"
-    mkpath(output_dir)
+    data_path = joinpath(output_dir, filename_prefix*".jld2")
 
-    filename = @sprintf(
-        "N%d+%d_stdev%.1e_samples%d_harmonics%d_seed%d_warmup%dx%d_iters%d.jld2",
-        Ne, Ng, omega_stdev, n_samples, n_harmonics, 
-        seed, warmup_samples, warmup_iters, opt_iters
-    )
-    full_path = joinpath(output_dir, filename)
-
-    xi_samples = [xi1 xi2];
-    jldsave(full_path; 
+    jldsave(data_path; 
             Ne, Ng, 
             omega1, omega2, xi1, xi2, xi12,  
-            omega_stdev, xi_self_stdev, xi_cross_stdev, n_samples, seed, 
-            omega_samples, xi_samples, xi12_samples, 
+            omega_stdev, xi_self_stdev, xi_cross_stdev, n_samples, seed, opt_samples, 
             T_gate, degree, n_splines, carrier_freqs, 
             control_coeffs_post_warmup, 
             controls1_post_warmup, controls2_post_warmup,
             control_coeffs, 
             controls1, controls2,
-            infidelities_post_warmup, infidelities
+            infidelities_post_warmup, 
+            eval_samples, infidelities
     )
+
+    # Close output file --- not needed any more
+    close(output_file)
 
 end # end main()
 
