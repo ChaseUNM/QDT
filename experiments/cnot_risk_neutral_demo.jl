@@ -145,6 +145,7 @@ function main()
     seed = parsed_args["seed"] # rng seed
     if seed < 1
         seed = Int(rand(UInt16))
+        parsed_args["seed"] = seed
     end
 
     # Controls
@@ -159,6 +160,9 @@ function main()
     warmup_samples = parsed_args["warmup-samples"]
     warmup_samples = min(warmup_samples, n_samples)
 
+    for (key, value) in parsed_args
+        @printf("%s => %s\n", key, string(value))
+    end
 
     ############################################################
     # SETUP
@@ -207,7 +211,9 @@ function main()
     # Optimize the controls at the parameter samples closest to the sample mean
     ################################################################
 
-    @printf("======== CONTROL WARM-UP ========\n")
+    @printf("\n\n======== CONTROL WARM-UP ========\n")
+
+    t_warmup_start = time()
 
     # Set the digital qudits parameters to sample closest to the sample mean in terms of frequencies. 
     # These parameters seem to be the most important in terms of control optimization.
@@ -273,10 +279,12 @@ function main()
         infidelities_post_warmup[j] = infidelity(Psi_j, U, Ne*Ne)
     end
 
-
+    @printf("\nWarm-up Runtime: %.2f s\n", time()-t_warmup_start)
 
     ################################################################# RISK NEUTRAL OPTIMIZATION
     ################################################################
+
+    t_optim_start = time()
 
     @printf("\n\n======== RISK NEUTRAL CONTROL ========\n")
 
@@ -328,6 +336,8 @@ function main()
         infidelities[j] = infidelity(Psi_j, U, Ne*Ne)
     end
 
+    @printf("\nOptimization Runtime: %.2f s\n", time()-t_optim_start)
+
     ############################################################
     # SAVE DATA TO FILE
     ############################################################
@@ -336,8 +346,9 @@ function main()
     mkpath(output_dir)
 
     filename = @sprintf(
-        "N%d+%d_stdev%.1e_samples%d_harmonics%d_seed%d.jld2",
-        Ne, Ng, omega_stdev, n_samples, n_harmonics, seed
+        "N%d+%d_stdev%.1e_samples%d_harmonics%d_seed%d_warmup%dx%d_iters%d.jld2",
+        Ne, Ng, omega_stdev, n_samples, n_harmonics, 
+        seed, warmup_samples, warmup_iters, opt_iters
     )
     full_path = joinpath(output_dir, filename)
 
