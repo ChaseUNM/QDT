@@ -42,9 +42,13 @@ function parse_commandline()
             default = 10
         ##### GATES ####
         "--T-gate"
-            help = "Gate duration"
+            help = "X and Y gate duration"
             arg_type = Float64
             default = 47.2
+        "--T-Zgate"
+            help = "Z gate duration"
+            arg_type = Float64
+            default = 1.5*47.2
         "--control-degree"
             help = "Degree of the splines defining control signals"
             arg_type = Int
@@ -96,7 +100,9 @@ function main()
     # Gates
     gates = [PauliX, PauliY, PauliZ]
     n_gates = length(gates)
-    T_gate = parsed_args["T-gate"]
+    T_XYgates  = parsed_args["T-gate"]
+    T_Zgate = parsed_args["T-Zgate"]
+    T_gate = [T_XYgates T_XYgates T_Zgate]
 
     # Controls
     degree    = parsed_args["control-degree"]
@@ -151,7 +157,7 @@ function main()
     # Create a control for each gate
     for i = 1:n_gates
         # Control for this gate
-        local qcontrol = FortranBSplineControl(degree, n_splines, T_gate)
+        local qcontrol = FortranBSplineControl(degree, n_splines, T_gate[i])
         add_control(q, gates[i], qcontrol)
         # Infidelities for this gate
         q.infidelity[gates[i]] = History(Vector{Float64})
@@ -191,13 +197,13 @@ function main()
                     eval_p_derivative(
                         control_obj, time, control_coeffs[t,i,:], 0
                     )
-                    for time in LinRange(0, T_gate, n_t_eval)
+                    for time in LinRange(0, T_gate[i], n_t_eval)
                 ]
             controls[t,i,2,:] = [
                     eval_q_derivative(
                         control_obj, time, control_coeffs[t,i,:], 0
                     )
-                    for time in LinRange(0, T_gate, n_t_eval)
+                    for time in LinRange(0, T_gate[i], n_t_eval)
                 ]
         end
 
@@ -378,12 +384,12 @@ function main()
             )
         for t = 1:n_trials
             plot!(
-                LinRange(0, T_gate, n_t_eval),
+                LinRange(0, T_gate[i], n_t_eval),
                 controls[t,i,1,:],
                 color=:blue, alpha=0.5, legend=false
             )
             plot!(
-                LinRange(0, T_gate, n_t_eval),
+                LinRange(0, T_gate[i], n_t_eval),
                 controls[t,i,2,:],
                 color=:red, alpha=0.5, legend=false
             )
