@@ -239,12 +239,12 @@ function main()
     mkpath(fig_dir)
 
     # Saving to file
-    file_prefix = @sprintf(
-        "Zonly_N%d+%d_stdev%.1e_samples%d_trials%d_seed%d",
-        Ne, Ng, omega_stdev, n_samples, n_trials, seed
+    filename = @sprintf(
+        "Zonly_N%d+%d_stdev%.1e_samples%d_ctrl%d-%d_dt%.2e_trials%d_seed%d_controls.svg",
+        Ne, Ng, omega_stdev, n_samples, degree, n_splines, opt_dt, n_trials, seed
     )
 
-    fig_path = joinpath(fig_dir, file_prefix * "_controls.svg")
+    fig_path = joinpath(fig_dir, filename)
     savefig(f, fig_path)
 
     return f
