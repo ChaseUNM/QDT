@@ -265,4 +265,3 @@ function optimize_control(
     end
 
 end
-

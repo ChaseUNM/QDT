@@ -48,7 +48,7 @@ function parse_commandline()
         "--T-Zgate"
             help = "Z gate duration"
             arg_type = Float64
-            default = 1.5*47.2
+            default = 47.2
         "--control-degree"
             help = "Degree of the splines defining control signals"
             arg_type = Int
@@ -138,6 +138,10 @@ function main()
     # Frequency parameter sampler
     omega_sampler = Normal(omega, omega_stdev)
 
+    # Parameter samples used for optimization
+    omega_samples = sort(rand(omega_sampler, n_samples))
+    xi_samples = xi * ones(n_samples)
+
     # Range of omegas over which to eval infidelities
     omega_range = collect(LinRange(omega_min,omega_max,n_omega_eval))
 
@@ -152,7 +156,7 @@ function main()
     # Create a Qudit
     q = DigitalQudit(Ne, Ng)
     N = Ne + Ng
-    add_param_samples(q, omega, xi) # Initializes the param hist
+    add_param_samples(q, omega_samples, xi_samples)
 
     # Create a control for each gate
     for i = 1:n_gates
@@ -171,17 +175,14 @@ function main()
     controls = zeros(n_trials, n_gates, 2, n_t_eval)
     control_coeffs = zeros(n_trials, n_gates, degree*n_splines)
     infidelities = zeros(n_trials, n_gates, 2*n_omega_eval)
-    omega_samples = zeros(n_trials, n_samples)
 
     for t = 1:n_trials
 
         t_start = time()
         @printf("\n==== TRIAL %d of %d ==== \n", t, n_trials)
 
-        # Parameter samples
-        omega_samples[t,:] .= sort(rand(omega_sampler, n_samples))
-        xi_samples = xi * ones(n_samples)
-        update_param_samples(q, omega_samples[t,:], xi_samples)
+        # Set the param samples to the set used for control optimization
+        update_param_samples(q, omega_samples, xi_samples)
 
         for i = 1:n_gates
             @printf("  Optimizing Gate %d of %d\n", i, n_gates)
@@ -210,7 +211,7 @@ function main()
         # Set the parameter samples to be evenly spaced between
         # omega_min and omega_max
         update_param_samples(q, omegas_eval, xi_eval)
-        q.omega_rot = mean(omega_samples[t,:]) # Use the same rotatining frame frequency as the initial set of samples, as this is the frame in which the controls where optimized
+        q.omega_rot = mean(omega_samples) # Use the same rotatining frame frequency as the initial set of samples, as this is the frame in which the controls where optimized
 
         # Measure fidelity over grid of omega values
         # and the larger set of samples
@@ -238,7 +239,7 @@ function main()
 
     # Split infidelities array into two pieces
     infidelity_vs_omega = infidelities[:,:,1:n_omega_eval]
-    infidelity_samples    = infidelities[:,:,n_omega_eval+1:end]
+    infidelity_samples  = infidelities[:,:,n_omega_eval+1:end]
 
     ##############################################################
     # SAVE DATA TO FILE
