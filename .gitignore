@@ -13,6 +13,7 @@
 *.txt
 *.gz
 *.pdf
+*.out
 
 # macOS Finder metadata
 .DS_store

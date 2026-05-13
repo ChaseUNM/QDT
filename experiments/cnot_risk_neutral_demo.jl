@@ -57,7 +57,7 @@ function parse_commandline()
         "--samples"
             help = "Number of parameter samples"
             arg_type = Int
-            default = 10
+            default = 200
         "--samples-eval"
             help = "Number of parameter samples used for control evaluation"
             arg_type = Int
@@ -70,7 +70,7 @@ function parse_commandline()
         "--control-degree"
             help = "Degree of the splines defining control signals"
             arg_type = Int
-            default = 2
+            default = 3
         "--control-splines"
             help = "Number of basis functions for the splines defining control signals"
             arg_type = Int

@@ -8,7 +8,7 @@ using LinearAlgebra, QuantumGateDesign, Random, Distributions
 
 mutable struct QDT
     #inputs 
-
+    
     #Model description
     N::Int64 
     Ne::Vector{Int64}
@@ -30,6 +30,7 @@ mutable struct QDT
     pcof_by_gate:: Vector{Vector{Float64}} #will need to change to vector of vectors for differing size of gates
     predicted_infidelity:: Vector{Float64}
     controls::Vector{AbstractControl}
+    max_control_parameter::Float64
     pcof_l::Float64
     pcof_u::Float64
     
@@ -72,8 +73,9 @@ mutable struct QDT
         measured_population_infidelity = zeros(N_gates)
         measured_state_infidelity = zeros(N_gates)
         Mspam_matrices = [column_stochastic(Mspam_order*abs.(rand(Normal(0,1), Ne[i] + Ng[i]))) for i in 1:N]
+        predicted_infidelity = fill(1.0, N_gates)
 
-        new(N, Ne, Ng, omega_rot, param_samples, n_param_samples, real_control_op, imag_control_op, degree, nsplines, T_gate, steps, N_gates, gate_set, pcof_by_gate, predicted_infidelity, controls, pcof_l, pcof_u, measured_population_infidelity,measured_state_infidelity, readout_samples, Mspam_order, Mspam_matrices)
+        new(N, Ne, Ng, omega_rot, param_samples, n_param_samples, real_control_op, imag_control_op, degree, nsplines, T_gate, steps, N_gates, gate_set, pcof_by_gate, predicted_infidelity, controls, max_control_parameter, pcof_l, pcof_u, measured_population_infidelity,measured_state_infidelity, readout_samples, Mspam_order, Mspam_matrices)
     end
     #perform optimization with qdt 
 
@@ -83,13 +85,15 @@ mutable struct QDT
 end 
 
 
-
-
-
+#Create internal loop logic
+#set an epsilon_characterize which says that if pred infidelity is too large, then skip to re-characterize immediately
+#otherwise optimize again increasing expressivity of controls, can also set another terminating condition
+#epsilon_diff where if the |new - old|_infidelity < epsilon then keep running control otherwise do more characterization
 
 function optimize_controls(
         qdt::QDT; 
-        ipopt_options=["max_iter" => 100, "print_level" => 3]
+        ipopt_options=["max_iter" => 100, "print_level" => 3],
+        ϵ₁ = 0.1, ϵ₂ = 0.05, ϵ₃ = 1E-4, verbose = true
     )
     N_gates = qdt.N_gates 
     N = qdt.N
@@ -106,14 +110,42 @@ function optimize_controls(
     pcof_by_gate = qdt.pcof_by_gate
     pcof_l = qdt.pcof_l 
     pcof_u = qdt.pcof_u
+    #Want to drive infidelity down through some internal logic
     for i in 1:N_gates 
-        #include while loop to accept predicted infidelity when it's small
+
         probs = [SchrodingerProb([0 0; 0 j], [real_control_ops], [imag_control_ops], U0, T_gates[i], steps[i]) for j in qdt.param_samples .- qdt.omega_rot]
+        while qdt.predicted_infidelity[i] > ϵ₃
+            #This while loop isn't exactly working
+            old_predicted_infidelity = qdt.predicted_infidelity[i]
+            
+            opt_ret_multiple = optimize_prob(probs, qdt.controls[i], pcof_by_gate[i], gate_set[i], pcof_lbound=pcof_l, pcof_ubound=pcof_u, cost_type=:Infidelity, ipopt_options=ipopt_options)
 
-        opt_ret_multiple = optimize_prob(probs, controls[i], pcof_by_gate[i], gate_set[i], pcof_lbound=pcof_l, pcof_ubound=pcof_u, cost_type=:Infidelity, ipopt_options=ipopt_options)
+            qdt.predicted_infidelity[i] = opt_ret_multiple.obj_val
+            qdt.pcof_by_gate[i] = opt_ret_multiple.x
+            #Terminate loop if predicted infidelity is too large to begin with
+            println("Old - new infidelity: ", abs(qdt.predicted_infidelity[i] - old_predicted_infidelity))
+            if qdt.predicted_infidelity[i] >= ϵ₁
+                if verbose
+                    println("Predicted infidelity greater than $(ϵ₁) for Gate $i, more characterization necessary.")
+                end
+                break
+            #Increasing expressivity of control pulses
+            elseif abs(qdt.predicted_infidelity[i] - old_predicted_infidelity) > ϵ₂ 
+                if verbose 
+                    println("Increasing expressing of controls")
+                end
+                qdt.nsplines[i] += 3 
+                controls[i] = FortranBSplineControl(qdt.degree[i], qdt.nsplines[i], T_gates[i])
+                pcof_by_gate[i] = (0.5 .- rand(controls[i].N_coeff)) .* qdt.max_control_parameter
+                
+            elseif abs(qdt.predicted_infidelity[i] - old_predicted_infidelity) < ϵ₂
+                if verbose 
+                    println("Predicted infidelities for Gate $i not changing with increasing expressivity of control pulses, more characterization necessary.")
+                end 
+                break 
+            end
 
-        qdt.predicted_infidelity[i] = opt_ret_multiple.obj_val
-        qdt.pcof_by_gate[i] = opt_ret_multiple.x
+        end
     end
 end
 

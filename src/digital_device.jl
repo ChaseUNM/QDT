@@ -11,13 +11,14 @@ include("digital_qudit.jl")
 mutable struct DigitalQuditPair
 
     # FIELDS
-    qudit1::DigitalQudit
-    qudit2::DigitalQudit
-    xi::History{Int64,Vector{Float64}}
-    J::History{Int64,Vector{Float64}}
-    controls::Dict{GateType, Vector{QuditControl}}
-    infidelity::Dict{GateType, History{Int64, Float64}}
-    
+    Ne::Int64                          # Number of essential energy levels
+    Ng::Int64                          # Number of guard levels
+    omega_rot::Float64                     # Rotating frame frequency
+    omega::History{Int64, Vector{Float64}} # History of qubit frequency samples
+    xi::History{Int64, Vector{Float64}} # History of qubit self-kerr samples
+    controls::Dict{GateType, QuditControl}
+    infidelity::Dict{GateType, History{Int, Float64}}
+
     # CONSTRUCTOR
     function DigitalQuditPair(q1::DigitalQudit, q2::DigitalQudit)
         xi = History(Vector{Float64})
@@ -36,32 +37,19 @@ end
 ##################################################################
 
 function add_param_samples(
-                    self::DigitalQuditPair, 
-                    xi::Vector{Float64},
-                    J::Vector{Float64};
+                    q::DigitalQudit, 
+                    omega::Vector{Float64}, 
+                    xi::Vector{Float64};
                     iter::Int64=-1
     )
     # Adds a new sample of cross-Kerr and Jaynes-Cummings
     # couplings for this pair of qudits.
     #
     # By default, 'iter' is set to the latest iteration + 1
-        
-    # Verify the number of xi and J parameters match
-    if length(xi) != length(J)
-        throw("DigitalQuditPair::add_param_samples(): Number of xi and J samples must match!")
-    end
-
-    push!(self.xi, iter, xi)
-    push!(self.J,  iter, J)
-end
-
-function add_param_samples(self::DigitalQuditPair, 
-                           xi::Float64, J::Float64; 
-                           kwargs...
-    )
-    # Overloaded version of the above function to work with 
-    # xi and J as floats rather than vectors of floats
-    add_param_samples(self, [xi], [J], kwargs...)
+    # 
+    push!(q.omega, iter, omega)
+    push!(q.xi, iter, xi)
+    q.omega_rot = mean(omega)
 end
 
 
@@ -91,31 +79,16 @@ end
 
 
 
-function add_control(self::DigitalQuditPair, 
-                     gate::GateType, 
-                     control_obj1::AbstractControl,
-                     control_obj2::AbstractControl
-                    )
-    # Adds an entry to the control history for the provided gate.
-    # If timestamp 'iter' isn't provided, the control is added to 
-    # the history at 1 + {the latestest control timestamp}
-
-    # Verify the gate times are the same
-    if control_obj1.tf != control_obj1.tf
-        throw("DigitalQuditPair::add_control(): control_obj1 and control_obj2 should have the same gate durations tf")
-    end
-
-    # Create a dictionary entry for this gate if 
-    # this isn't one already
-    if !haskey(self.controls, gate)
-        self.controls[gate] = [
-            QuditControl(control_obj1), 
-            QuditControl(control_obj2)
-        ]
-        randomize_coeffs(self.controls[gate][1])
-        randomize_coeffs(self.controls[gate][2])
+function add_control(q::DigitalQudit, gate::GateType, 
+                     control_obj::AbstractControl; iter::Int64=-1)
+    # Adds an entry to this qudits control history for the provided gate.
+    # If timestamp 'iter' isn't provided, the control is added to the 
+    # history at 1 + {the latestest control timestamp}
+    if !haskey(q.controls, gate)
+        q.controls[gate] = QuditControl(control_obj)
+        randomize_coeffs(q.controls[gate])
     else
-        throw("DigitalQuditPair::add_control(): Not yet implemented!")
+        push!(q.controls[gate], iter, c)
     end
 end
 
@@ -257,10 +230,9 @@ function run_control(
     # Create a SchrodingerProb for each of the qudits param samples
     probs = get_schrodinger_problems(self, T_gate, dt)  
     n_probs = length(probs)  
-    (N, Ne) = size(probs[1].u0)
 
     # Run simulation for each parameter setting    
-    Psi = zeros(Complex, n_probs, N, Ne)
+    Psi = zeros(Complex, n_probs, N, q.Ne)
     for j = 1:n_probs
         state_history = eval_forward(
                             probs[j], 
@@ -278,7 +250,8 @@ function optimize_control(
             self::DigitalQuditPair, 
             gate::GateType; 
             dt = 0.2,
-            options=["max_iter" => 100, "print_level" => 3] 
+            options=["max_iter" => 100, "print_level" => 3], 
+            iter::Int = -1
     )
     # Optimizes the control signals for this qudit to implement 
     # the provided 'gate'
@@ -292,14 +265,11 @@ function optimize_control(
     U_target = unitary(gate, [1,2], n, n_ess)
 
     # Extract control variables
-    q1_control = self.controls[gate][1]
-    q2_control = self.controls[gate][2]
-    max_amplitude = q1_control.max_amplitude
-    iter, control_obj1 = last(q1_control.objs)
-       _, control_obj2 = last(q2_control.objs)
-    T_gate = control_obj1.tf
-    _, control_coeffs1 = last(q1_control.coeffs)
-    _, control_coeffs2 = last(q2_control.coeffs)
+    q_control = q.controls[gate]
+    max_amplitude = q_control.max_amplitude
+    iter, control_obj = last(q_control.objs)
+    T_gate = control_obj.tf
+    _, control_coeffs = last(q_control.coeffs)
     
     # Create a SchrodingerProb for each of the qudits param samples
     probs = get_schrodinger_problems(self, T_gate, dt)    

@@ -1,5 +1,5 @@
 using LinearAlgebra, QuantumGateDesign, ValueHistories, Random, Distributions
-include("digital_device.jl")
+include("digital_qudit.jl")
 
 ########################################################################
 ########################################################################
@@ -43,6 +43,13 @@ function sample_quantum_state(samples, p)
     return p_obs 
 end
 
+function sample_quantum_state_history(samples, M, p)
+    p_obs = zeros(size(p))
+    for i in 1:size(p, 2)
+        p_obs[:,i,:] = sample_quantum_state(samples, M*p[:,i,:])
+    end
+    return p_obs 
+end
 
 ########################################################################
 ########################################################################
@@ -58,14 +65,14 @@ mutable struct PhysicalQudit
     # CONSTRUCTOR
     function PhysicalQudit(
                 Ne::Int64, Ng::Int64, 
-                omega::Float64, xi::Float64;
+                omega::Float64, omega_rot::Float64, xi::Float64;
                 M_spam_order=1e-3
         )
 
         # Generate the underlying Digitqudit
         qudit = DigitalQudit(Ne, Ng)
-        add_param_samples(qudit, [omega], [xi])
-
+        add_param_samples(qudit, [omega], [xi]; average_omega_rot = false)
+        qudit.omega_rot = omega_rot
         # Generate the Mspam matrix
         N = Ne + Ng;
         ϵ = M_spam_order * rand(N)
@@ -86,6 +93,27 @@ mutable struct PhysicalQudit
 
 end
 
+function run_control_physical(q_physical::PhysicalQudit, q_control::QuditControl; dt=0.2)
+    # Computes the terminal state Psi, for each of the qudit's current
+    # parameter settings, in response to the provided control signal
+    q = q_physical.qudit
+    iter, control_obj = last(q_control.objs)
+    T_gate = control_obj.tf
+    _, control_coeffs = last(q_control.coeffs)
+    
+    # Create a SchrodingerProb for each of the qudits param samples
+    probs = get_schrodinger_problems(q, T_gate, dt) 
+    prob = probs[1]
+    
+    # println(get(q.omega))
+    # println("Omega rotation: ",q.omega_rot)
+    # Run simulation for each parameter setting    
+    Psi = zeros(Complex, q.Ne + q.Ng, q.Ne)
+    state_history = eval_forward(prob, control_obj, control_coeffs)
+    Psi[:,:] = state_history[:,end,:]
+
+    return Psi, state_history
+end
 
 function measure_infidelity(
         q::PhysicalQudit, 
@@ -101,11 +129,8 @@ function measure_infidelity(
     # Target unitary
     N = q.qudit.Ne + q.qudit.Ng
     U_target = unitary(gate, N)
-
     # Run the controls to get the final state
-    psi_final = run_control(q.qudit, q_control, dt=dt)
-    psi_final = psi_final[1,:,:]
-    # Normalize 
+    psi_final, psi_history = run_control_physical(q, q_control, dt=dt)
     psi_final = psi_final ./ norm.(eachcol(psi_final)) 
 
     # State infidelity
@@ -113,11 +138,13 @@ function measure_infidelity(
 
     # Population infidelity
     observed_populations = abs2.(psi_final)
+    observed_history = abs2.(psi_history)
     if add_SPAM
         observed_populations = sample_quantum_state(
                                     n_readout_samples, 
                                     q.M_spam * observed_populations
                                 )
+        observed_history = sample_quantum_state_history(n_readout_samples, q.M_spam, observed_history)
     end
     population_infidelity = infidelity_population(
                                 observed_populations, 
@@ -125,5 +152,5 @@ function measure_infidelity(
                             )
 
     # Return or state to q?
-    return (state_infidelity, population_infidelity)
+    return (state_infidelity, population_infidelity, observed_history)
 end
