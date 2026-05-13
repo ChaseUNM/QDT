@@ -205,6 +205,9 @@ add_param_samples(q, omega_samples, xi_samples; iter = iter_count, average_omega
 # Main characterization loop
 # -----------------------------
 # Risk-neutral optimization then characterization, repeated up to max_characterizations.
+
+# determine downweighting parameters and kernel type for creating the kernel density estimation. 
+# the two options are "Normal" and "Beta" kernels
 downweight_power = 0.2
 bandwidth = 0.1
 dist_func = "Beta"
