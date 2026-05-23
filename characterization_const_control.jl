@@ -48,19 +48,13 @@ T         = 50
 nsteps    = 250
 dt        = T/nsteps
 max_control_amplitude = 0.1
-ipopt_options = ["max_iter" => 100, "print_level" => 0]
-
-
-# Gate set
-gates = [PauliX, PauliZ]
-gate_set = [unitary(g) for g = gates]
-N_gates = length(gates)
 
 
 # MCMC Parameters
-n_samples = 5
+λ = 3.0;
+n_samples = 10000
 mcmc_burnin     = 2500
-mcmc_thin       = 50
+mcmc_thin       = 5
 mcmc_iterations = mcmc_burnin + n_samples*mcmc_thin
 # Initial parameter guesses
 ω0 = 4.3
@@ -101,85 +95,32 @@ phys_q = PhysicalQudit(digital_q; M_spam_order=M_spam_order)
 control_coeffs = 0.5*max_control_amplitude*ones(control.N_coeff)
 const_control_obs = run_control(phys_q, control_coeffs, n_readout_samples)
 
-# Initial prior and posterior
-init_prior     = UniformPrior(param_domain)
-init_posterior = W2Posterior(digital_q, const_control_obs, init_prior)
+# Prior and posterior
+prior     = UniformPrior(param_domain)
+posterior = W2Posterior(digital_q, const_control_obs, prior; λ=λ)
 
 # Run an initial W2-chain inference constant control data
 α0 = [ω0; ξ0]
 const_control_char_event = run_w2_chain(
-                                init_posterior, α0,
+                                posterior, α0,
                                 iterations=mcmc_iterations,
                                 burnin=mcmc_burnin,
                                 thin=mcmc_thin
                             )
 
-
 #====================================================================================
-    MAIN OPTIMIZATION + RE-CHARACTERIZATION LOOP
-
-Alternating between risk-neutral optimization and characterization
+    POSTERIOR VISUALIZATION
 ====================================================================================#
 
-opt_events  = Matrix{OptimizationEvent}(undef, max_iters, N_gates)
-obs_events  = Matrix{ObservationEvent}(undef, max_iters, N_gates)
-char_events = Vector{CharacterizationEvent}(undef, max_iters+1)
-char_events[1] = const_control_char_event
+n_omega = 2001
+omegas = LinRange(ωmin+0.35, ωmax-0.35, n_omega)
 
-# Initial, random control coefficients ("betas") for each gate
-control_coeffs = (0.5 .- rand(control.N_coeff,N_gates)) * max_control_amplitude
-
-
-for i in 1:max_iters
-
-    @printf("OPTIMIZATION + RE-CHARACTERIZATION LOOP, ITER %d\n", i)
-
-    # Set the digital qudit to use the parameter samples generated during
-    # the previous characterization event
-    set_parameters(digital_q, char_events[i].samples)
-
-
-    # Optimize each of the gates
-    for j = 1:N_gates
-        @printf("  Optimizing gate %s ...\n", string(gates[j]))
-
-        # Run the optimization loop
-        opt_events[i,j] = optimize_control(digital_q, control_coeffs[:,j], gates[j],
-                                           max_amplitude=max_control_amplitude,
-                                           options=ipopt_options)
-        control_coeffs[:,j] = opt_events[i,j].control_coeffs
-
-        # Evaluate the optimized controls on the physical qudit
-        @printf("  ... Evaluating gate %s\n", string(gates[j]))
-        obs_events[i,j] = run_control(phys_q, control_coeffs[:,j], 
-                                      n_readout_samples; target_gate=gates[j])
-        @printf("  ... Measured Infidelity = %.2e\n", obs_events[i,j].measured_infidelity)
-    end
-
-    # Check termination condition: both measured infidelities below epsilon for all gates
-    if all([obs_events[i,j].measured_infidelity < epsilon for j = 1:N_gates])
-        println("TERMINATING, ALL MEASURED FIDELITIES BELOW ϵ = %.2e\n", epsilon)
-        break 
-    end
-
-    @printf("  Begining re-characterization post optimization ... \n")
-
-    # Build a new Truncated Gaussian prior from the most recently generated 
-    # parameter samples
-    prior = TructGaussianPrior(char_events[i].samples, param_domain, downweight_power)
-    
-    # Collect all previous observation events into an array
-    event_obs_i = [const_control_obs; reshape(obs_events[1:i,:], :)]
-
-    # New posterior based on the new prior and all previous observations
-    posterior = W2Posterior(digital_q, event_obs_i, prior)
-
-    @printf("  ... Running MCMC to sample new posterior\n")
-    char_events[i+1] = run_w2_chain(
-                            posterior, prior.μ,
-                            iterations=mcmc_iterations,
-                            burnin=mcmc_burnin,
-                            thin=mcmc_thin
-                        )
-    @printf("  ... Done.\n")
+prior_vs_omega = zeros(n_omega)
+logpost_vs_omega = zeros(n_omega)
+risk_vs_omega = zeros(n_omega)
+for i = 1:n_omega
+    prior_vs_omega[i] = exp(log(prior, [omegas[i], ξ]))
+    (logpost, Φ) = log(posterior, [omegas[i], ξ])
+    risk_vs_omega[i] = Φ[1]
+    logpost_vs_omega[i] = logpost
 end

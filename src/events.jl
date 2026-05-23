@@ -39,10 +39,11 @@ Fields
         measured_populations[i,:,j] has been shifted and rescaled s.t.
         it encodes a probability distribution, e.g. 
 
-                    ∑ₜ measured_populations[i,ₜ,j] = 1
+                    ∑ₜ measured_populations[i,t,j] = 1
 
-        This variable defaults to all zeros and will be set within the 
-        characterization loop.
+        This variable defaults to undef array, with element [1,1,1] set to 
+        `-1` to indicate the array has not been set. The true values will 
+        set within the characterization loop.
 
     
     gate::Union{Nothing,GateType}
@@ -90,7 +91,8 @@ struct ObservationEvent
             dt::Union{Nothing,Float64}=nothing
         )
         timestamp = now()
-        measured_populations_postprocessed = zero(measured_populations)
+        measured_populations_postprocessed = Array{Float64,3}(undef, size(measured_populations))
+        measured_populations_postprocessed[1,1,1] = -1
         new(
             timestamp, device, copy(control_coeffs), measured_populations, 
             measured_populations_postprocessed, gate, state_infidelity, 
@@ -98,6 +100,15 @@ struct ObservationEvent
         ) 
     end
 
+end
+
+
+"""
+Determines where the postprocessed measured population data has 
+been computed already.
+"""
+function postprocessed(event::ObservationEvent)
+    return event.measured_populations_postprocessed[1,1,1] != -1
 end
 
 
@@ -250,7 +261,7 @@ struct OptimizationEvent
                 dt_eval::Float64=-1
         )
         timestamp = now()
-        new(timestamp, gate, params, control_coeffs, predicted_infidelities, dt_opt, dt_eval_fidelity) 
+        new(timestamp, gate, params, control_coeffs, predicted_infidelities, dt_opt, dt_eval) 
     end
 
 end

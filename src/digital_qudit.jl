@@ -54,7 +54,7 @@ mutable struct DigitalQudit <: DigitalDevice
             control::AbstractControl
         )
         N = Ne + Ng
-        new(Ne, Ng, N, omega, omega_rot, xi, control)
+        new(Ne, Ng, N, omega, xi, omega_rot, control)
     end
 end
 

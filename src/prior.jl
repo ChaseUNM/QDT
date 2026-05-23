@@ -133,8 +133,8 @@ Fields
 struct TructGaussianPrior <: Prior
     μ::Vector{Float64}
     Σinv::Matrix{Float64}
-    α::Float64
     support::RectangularDomain
+    α::Float64
 end
 
 """
@@ -154,10 +154,10 @@ function TructGaussianPrior(
         support::RectangularDomain, 
         downweight_power::Float64=0.2
     )
-    μ = mean(samples, dims=2)
-    Σ = cov(samples)
+    μ = reshape(mean(samples, dims=2),:)
+    Σ = cov(samples, dims=2)
     Σinv = inv(Σ) 
-    new(μ, Σinv, downweight_power, support)
+    return TructGaussianPrior(μ, Σinv, support, downweight_power)
 end
 
 

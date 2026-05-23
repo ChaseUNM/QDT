@@ -171,36 +171,36 @@ end
 
 Evaluates the log of the W2-based posterior `post` at the point `θ`
 """
-function Base.log(post::W2Posterior, θ::Vector{Float64})
+function Base.log(posterior::W2Posterior, θ::Vector{Float64})
 
-    prior = post.prior
-    event_obs = post.event_obs
+    prior     = posterior.prior
+    event_obs = posterior.event_obs
 
     # Evaluate the (log) prior at θ
     logprior = log(prior, θ)
 
     # Wasserstein distance by observation event 
-    n_obs = post.n_obs
+    n_obs = posterior.n_obs
     Φ = zeros(n_obs)
     Nt = Vector{Int}(undef,n_obs)
     for i = 1:n_obs
         
         # Post-processed observed data
         obs_data = event_obs[i].measured_populations_postprocessed
-        if isnothing(obs_data)
+        if !postprocessed(event_obs[i])
             # Post-processing the first time we use this data for characterization
             obs_data = postprocess_event_wasserstein(
                             event_obs[i].measured_populations, 
-                            δ=post.δ
+                            δ=posterior.δ
                         )
-            event_obs[i].measured_populations_postprocessed = obs_data
+            event_obs[i].measured_populations_postprocessed .= obs_data
         end
         (Nx,Nt[i],Ny) = size(obs_data)
 
         # Forward evaluation for the given parameter setting
-        t_grid, sim_data = eval_forward(event_obs[i], post.digital_device, θ)
+        t_grid, sim_data = eval_forward(event_obs[i], posterior.digital_device, θ)
         sim_data = reshape(sim_data, Nx, Nt[i], Ny)
-        sim_data = postprocess_event_wasserstein(sim_data, δ=post.δ)
+        sim_data = postprocess_event_wasserstein(sim_data, δ=posterior.δ)
 
         # Wasserstein distance calc
         for j = 1:Nx
@@ -218,7 +218,7 @@ function Base.log(post::W2Posterior, θ::Vector{Float64})
     
     # Finalize posterior value
     return (
-        -post.risk_scale * post.λ * mean(Φ .* Nt) + logprior, 
+        -posterior.risk_scale * posterior.λ * mean(Φ .* Nt) + logprior, 
         Φ
     )
 
