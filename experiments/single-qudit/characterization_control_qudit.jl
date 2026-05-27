@@ -7,29 +7,29 @@
 #   and reusability (see improvement notes below).
 
 using LinearAlgebra, Plots, QuantumGateDesign, Random, Distributions, JLD2, Printf
-include("src/QDT.jl")
-include("src/physical_qudit.jl")
-include("src/prior.jl")
-include("src/posterior.jl")
-include("src/characterization.jl")
+include("../src/QDT.jl")
+include("../src/physical_qudit.jl")
+include("../src/prior.jl")
+include("../src/posterior.jl")
+include("../src/characterization.jl")
 
 #====================================================================================
     PARAMETERS
 ====================================================================================#
 
+# Parameters of the physical qudit
+ω  = 4.62
+ξ  = 0.19
+Ne = 2
+Ng = 1
+
+
 # Parameter domain
 ωmin = 4.0
 ωmax = 5.0
-ξmin = 0.1
-ξmax = 0.3
+ξmin = ξ-0.1
+ξmax = ξ+0.2
 param_domain = RectangularDomain([ωmin ωmax; ξmin ξmax])
-
-
-# Parameters of the physical qudit
-ω  = 4.62
-ξ  = 0.18
-Ne = 2
-Ng = 0
 
 
 # Rotating frame frequency --- defines the frequency of the control carrier wave
@@ -43,12 +43,11 @@ n_readout_samples = 100000
 
 # Control parametrization: B-splines
 degree    = 2
-n_splines = 10 
+n_splines = 8 
 T         = 50
-nsteps    = 250
+nsteps    = 200
 dt        = T/nsteps
 max_control_amplitude = 0.1
-ipopt_options = ["max_iter" => 100, "print_level" => 0]
 
 
 # Gate set
@@ -58,22 +57,24 @@ N_gates = length(gates)
 
 
 # MCMC Parameters
-n_samples = 5
+λ = 1.0;
+n_samples       = 50
 mcmc_burnin     = 2500
-mcmc_thin       = 50
+mcmc_thin       = 5
 mcmc_iterations = mcmc_burnin + n_samples*mcmc_thin
 # Initial parameter guesses
-ω0 = 4.3
-ξ0 = 0.26
+ω0 = ω_rot+0.05
+ξ0 = 0.205
 
 # Prior downweighting power
-downweight_power = 0.2
+downweight_power = 0.1
 
 # Number of characterization+optimization iters to perform
 max_iters = 2
 
 # Target get infidelity
 epsilon = 1e-4
+
 
 #====================================================================================
     SETUP
@@ -94,16 +95,18 @@ phys_q = PhysicalQudit(digital_q; M_spam_order=M_spam_order)
     CONSTANT-CONTROL CHARACTERIZATION
 ====================================================================================#
 
-@printf("CONSTANT-CONTROL CHARACTERIZATION\n")
+@printf("CONSTANT CONTROL CHARACTERIZATION\n")
 
 # Run the constant controls on the physical qudit, measuring noisy
 # population data
-control_coeffs = 0.5*max_control_amplitude*ones(control.N_coeff)
+N_coeff = control.N_coeff
+control_coeffs = zeros(N_coeff)
+control_coeffs[1:Int(N_coeff/2)] .= 0.5*max_control_amplitude
 const_control_obs = run_control(phys_q, control_coeffs, n_readout_samples)
 
-# Initial prior and posterior
+# Prior and posterior
 init_prior     = UniformPrior(param_domain)
-init_posterior = W2Posterior(digital_q, const_control_obs, init_prior)
+init_posterior = W2Posterior(digital_q, const_control_obs, init_prior; λ=λ)
 
 # Run an initial W2-chain inference constant control data
 α0 = [ω0; ξ0]
@@ -158,7 +161,7 @@ for i in 1:max_iters
 
     # Check termination condition: both measured infidelities below epsilon for all gates
     if all([obs_events[i,j].measured_infidelity < epsilon for j = 1:N_gates])
-        println("TERMINATING, ALL MEASURED FIDELITIES BELOW ϵ = %.2e\n", epsilon)
+        @printf("TERMINATING, ALL MEASURED FIDELITIES BELOW ϵ = %.2e\n", epsilon)
         break 
     end
 

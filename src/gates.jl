@@ -3,7 +3,7 @@ using LinearAlgebra, QuantumGateDesign
 ##############################################################
 # GateType enum
 ##############################################################
-@enum GateType PauliX PauliY PauliZ Hadamard CNOT
+@enum GateType PauliX PauliY PauliZ Hadamard CNOT CZ
 
 SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard]
 
@@ -24,8 +24,10 @@ function unitary(gate::GateType)
         return Hadamard_gate()
     elseif gate == CNOT
         return CNOT_gate()
+    elseif gate == CZ
+        return collect(Diagonal([1.0,1,1,-1]))
     else
-        throw("GateType::unitary() You shouldnt be here?")
+        throw("GateType::unitary() Gate note recognized")
     end
 end
 

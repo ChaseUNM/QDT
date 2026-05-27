@@ -29,7 +29,8 @@ Fields
     target_accept::Real             Target for proportion of samples accepted during
                                     the MCMC loop
 
-    rng                             Random number generator 
+    rng_seed::Int                   Seed for the random number generator. Set to -1
+                                    to use Random.default_rng()
 
 
 Returns::NamedTuple, with fields
@@ -52,8 +53,15 @@ function run_w2_chain(
     thin::Int=2,
     t0_adapt::Int=100,
     target_accept::Real=0.44,
-    rng=Random.default_rng(),
+    rng_seed::Int=-1,
 )
+
+    # Select RNG
+    if rng_seed == -1
+        rng = Random.default_rng()
+    else
+        rng = Xoshiro(rng_seed)
+    end
 
     # Allocate space for the samples
     # generated each iteration
