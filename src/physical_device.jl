@@ -93,6 +93,54 @@ mutable struct PhysicalQudit
 
 end
 
+
+########################################################################
+# PhysicalQuditPair
+########################################################################
+
+mutable struct PhysicalQuditPair
+
+    # FIELDS
+    qudit_pair::DigitalQuditPair
+    M_spam::AbstractMatrix
+    measured_state_infidelity::Dict{GateType, History{Int64, Float64}}
+    measured_population_infidelity::Dict{GateType, History{Int64, Float64}}
+
+    # CONSTRUCTOR
+    function PhysicalQuditPair(
+        q1_physical::PhysicalQudit,
+        q2_physical::PhysicalQudit,
+        xi::Float64,
+        J::Float64;
+        M_spam_order = 1e-3
+    )
+
+        q_pair = DigitalQuditPair(q1_physical.qudit, q2_physical.qudit)
+
+        # Deterministic pair parameters
+        add_param_samples(q_pair, [xi], [J])
+
+        # Full system dimension
+        N1 = q1_physical.qudit.Ne + q1_physical.qudit.Ng
+        N2 = q2_physical.qudit.Ne + q2_physical.qudit.Ng
+        N = N1 * N2
+
+        # Full-system SPAM matrix
+        ϵ = M_spam_order * rand(N)
+        M_spam = column_stochastic(ϵ)
+
+        measured_state_infidelity = Dict{GateType, History{Int64, Float64}}()
+        measured_population_infidelity = Dict{GateType, History{Int64, Float64}}()
+
+        new(
+            q_pair,
+            M_spam,
+            measured_state_infidelity,
+            measured_population_infidelity
+        )
+    end
+end
+
 function run_control_physical(q_physical::PhysicalQudit, q_control::QuditControl; dt=0.2)
     # Computes the terminal state Psi, for each of the qudit's current
     # parameter settings, in response to the provided control signal
@@ -100,7 +148,6 @@ function run_control_physical(q_physical::PhysicalQudit, q_control::QuditControl
     iter, control_obj = last(q_control.objs)
     T_gate = control_obj.tf
     _, control_coeffs = last(q_control.coeffs)
-    
     # Create a SchrodingerProb for each of the qudits param samples
     probs = get_schrodinger_problems(q, T_gate, dt) 
     prob = probs[1]
@@ -111,6 +158,38 @@ function run_control_physical(q_physical::PhysicalQudit, q_control::QuditControl
     Psi = zeros(Complex, q.Ne + q.Ng, q.Ne)
     state_history = eval_forward(prob, control_obj, control_coeffs)
     Psi[:,:] = state_history[:,end,:]
+
+    return Psi, state_history
+end
+
+function run_control_physical(
+    q_pair_physical::PhysicalQuditPair,
+    q1_control::QuditControl,
+    q2_control::QuditControl;
+    dt = 0.2
+)
+    q_pair = q_pair_physical.qudit_pair
+
+    _, control_obj1 = last(q1_control.objs)
+    _, control_obj2 = last(q2_control.objs)
+
+    T_gate = control_obj1.tf
+
+    _, control_coeffs1 = last(q1_control.coeffs)
+    _, control_coeffs2 = last(q2_control.coeffs)
+
+    probs = get_schrodinger_problems(q_pair, T_gate, dt)
+
+    # Deterministic, so use the first and only parameter sample
+    prob = probs[1]
+    
+    state_history = eval_forward(
+        prob,
+        [control_obj1, control_obj2],
+        [control_coeffs1; control_coeffs2]
+    )
+
+    Psi = state_history[:, end, :]
 
     return Psi, state_history
 end
@@ -140,6 +219,8 @@ function measure_infidelity(
     observed_populations = abs2.(psi_final)
     observed_history = abs2.(psi_history)
     if add_SPAM
+        println("M_Spam: ")
+        display(q.M_spam)
         observed_populations = sample_quantum_state(
                                     n_readout_samples, 
                                     q.M_spam * observed_populations
@@ -153,4 +234,68 @@ function measure_infidelity(
 
     # Return or state to q?
     return (state_infidelity, population_infidelity, observed_history)
+end
+
+function measure_infidelity(
+    q_pair_physical::PhysicalQuditPair,
+    gate::GateType,
+    q1_control::QuditControl,
+    q2_control::QuditControl,
+    n_readout_samples::Int64;
+    add_SPAM = true,
+    dt = 0.2
+)
+
+    q_pair = q_pair_physical.qudit_pair
+    q1 = q_pair.qudit1
+    q2 = q_pair.qudit2
+
+    n = [q1.Ne + q1.Ng, q2.Ne + q2.Ng]
+    n_ess = [q1.Ne, q2.Ne]
+
+    # Target unitary on the full two-qudit system
+    U_target = unitary(gate, [1, 2], n, n_ess)
+
+    # Simulate physical evolution
+    psi_final, psi_history = run_control_physical(
+        q_pair_physical,
+        q1_control,
+        q2_control;
+        dt = dt
+    )
+
+    # Normalize each output column
+    psi_final = psi_final ./ norm.(eachcol(psi_final))
+
+    # State infidelity
+    state_infidelity = infidelity(
+        psi_final,
+        U_target,
+        size(U_target, 2)
+    )
+
+    # Population infidelity
+    observed_populations = abs2.(psi_final)
+    observed_history = abs2.(psi_history)
+
+    if add_SPAM
+
+        observed_populations = sample_quantum_state(
+            n_readout_samples,
+            q_pair_physical.M_spam * observed_populations
+        )
+
+        observed_history = sample_quantum_state_history(
+            n_readout_samples,
+            q_pair_physical.M_spam,
+            observed_history
+        )
+    end
+
+    population_infidelity = infidelity_population(
+        observed_populations,
+        abs2.(U_target)
+    )
+
+    return state_infidelity, population_infidelity, observed_history
 end

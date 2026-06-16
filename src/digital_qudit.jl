@@ -200,14 +200,22 @@ end
 
 
 function add_control(q::DigitalQudit, gate::GateType, 
-                     control_obj::AbstractControl; iter::Int64=-1, coeffs::Union{Vector{Float64}, Nothing} = nothing)
+                     control_obj::AbstractControl; iter::Int64=-1, coeffs::Union{Vector{Float64}, Nothing} = nothing, overwrite_control::Bool = false)
     # Adds an entry to this qudits control history for the provided gate.
     # If timestamp 'iter' isn't provided, the control is added to the 
     # history at 1 + {the latestest control timestamp}
-    if !haskey(q.controls, gate)
+    if overwrite_control 
+        q.controls[gate] = QuditControl(control_obj)
+        if coeffs != nothing 
+            push!(q.controls[gate].coeffs, iter, copy(coeffs))
+        else
+            randomize_coeffs(q.control[gate])
+        end
+
+    elseif !haskey(q.controls, gate)
         q.controls[gate] = QuditControl(control_obj)
         if coeffs != nothing
-            push!(q.controls[gate].coeffs, iter, coeffs)
+            push!(q.controls[gate].coeffs, iter, copy(coeffs))
         else
             randomize_coeffs(q.controls[gate])
         end
@@ -216,6 +224,39 @@ function add_control(q::DigitalQudit, gate::GateType,
         coeffs = q.controls[gate]
         throw("making sure termination happens right now")
     end
+end
+
+function get_drift_hamiltonians(q::DigitalQudit)
+
+    # Set unscaled drift Hamiltonian
+    a = lower_op(q.Ne + q.Ng) 
+    H_omega = a' * a 
+    H_xi = a' * a' * a * a;
+
+    # Qudit parameters
+    omega_rot = q.omega_rot;
+    omega = get(q.omega)
+    xi = get(q.xi)
+    n_samples = length(omega)
+    # Scaled Hamiltonians
+    H_drift = [
+        ((omega[j]-omega_rot)*H_omega) .- (0.5*xi[j]*H_xi)
+        for j = 1:n_samples
+    ]
+    
+    return H_drift
+end
+
+
+"""
+Returns the (unscaled) control Hamiltonians a + a'
+and a-a' for this qudit
+"""
+function get_control_hamiltonians(q::DigitalQudit)
+    a = lower_op(q.Ne + q.Ng) 
+    H_c_re = a + a';
+    H_c_im = a - a';
+    return H_c_re, H_c_im
 end
 
 
@@ -244,7 +285,8 @@ function get_schrodinger_problems(q::DigitalQudit, T, dt)
     n_samples = length(omega)
 
     # Number of timesteps
-    n_timesteps = ceil(Int, T_gate/dt)
+
+    n_timesteps = ceil(Int, T/dt)
 
     # Generating the SchrodingerProb
     probs = [  SchrodingerProb(
@@ -314,5 +356,4 @@ function optimize_control(
     # Save results     
     push!(q.infidelity[gate], iter, opt_ret_multiple.obj_val)
     control_coeffs .= opt_ret_multiple.x
-
 end
