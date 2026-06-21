@@ -1,9 +1,3 @@
-using LinearAlgebra, QuantumGateDesign, ValueHistories
-include("QDT.jl")
-include("events.jl")
-include("digital_qudit.jl")
-
-
 """
 DigitalQubitPair struct
 
@@ -31,27 +25,26 @@ Fields
 
 """
 mutable struct DigitalQubitPair <: DigitalDevice
-
     N::Int64
-
+    Ne::Int64
     omega1::Union{Float64, Vector{Float64}}
     omega2::Union{Float64, Vector{Float64}}
     xi::Union{Float64, Vector{Float64}}
-    
     omega_rot::Float64
-
-    function DigitalQubitPair(
-            omega1::Union{Float64, Vector{Float64}}, 
-            omega2::Union{Float64, Vector{Float64}},
-            xi::Union{Float64, Vector{Float64}},
-            omega_rot::Float64
-        )
-        N = 4
-        new(N, omega1, omega2, xi, omega_rot)
-    end
 end
 
 
+
+function DigitalQubitPair(
+        omega1::Union{Float64, Vector{Float64}}, 
+        omega2::Union{Float64, Vector{Float64}},
+        xi::Union{Float64, Vector{Float64}},
+        omega_rot::Float64
+    )
+    N = 4
+    Ne = 4
+    DigitalQubitPair(N, Ne, omega1, omega2, xi, omega_rot)
+end
 
 
 """
@@ -76,7 +69,13 @@ function set_parameters(q::DigitalQubitPair, ω₁::Float64, ω₂::Float64, ξ:
     q.xi     = ξ
 end
 
-function set_parameters(q::DigitalQudit, θ::Matrix{Float64})
+function set_parameters(q::DigitalQubitPair, θ::Vector{Float64})
+    q.omega1 = θ[1]
+    q.omega2 = θ[2]
+    q.xi     = θ[3]
+end
+
+function set_parameters(q::DigitalQubitPair, θ::Matrix{Float64})
     q.omega1 = θ[1,:]
     q.omega2 = θ[2,:]
     q.xi     = θ[3,:]
@@ -84,23 +83,16 @@ end
 
 
 """
-Returns a copy of the current parameters of the DigitalQudit
+Returns a copy of the current parameters of the DigitalQubitPair
 as a single Matrix θ = [ω₁; ω₂; ξ]
 """
-function get_parameters(q::DigitalQudit)
+function get_parameters(q::DigitalQubitPair)
     if isa(q.omega1, Float64)
         return [q.omega2; q.omega2; q.xi]
     else
         return [q.omega1 q.omega2 q.xi]
     end
 end
-
-
-
-function get_controls(self:DigitalQudit)::Vector{AbstractControl}
-    return [self.control self.control]
-end
-
 
 
 
@@ -122,8 +114,9 @@ Returns the following collections of matrices:
 """
 function get_hamiltonians(q::DigitalQubitPair)
 
+    n = 2
     N = 4
-    subsystem_sizes = [2, 2]
+    subsystem_sizes = [n,n]
 
     # Qudit parameters
     omega_rot = q.omega_rot;
@@ -133,7 +126,7 @@ function get_hamiltonians(q::DigitalQubitPair)
     n_samples = length(omega1)
 
     # Lowering operator by subsystem
-    a  = lower_op(N) 
+    a  = lower_op(n) 
     a1 = promote_subsys_op(a, subsystem_sizes, 1)
     a2 = promote_subsys_op(a, subsystem_sizes, 2)
 
@@ -168,9 +161,10 @@ and imaginary parts (aₖ-aₖ') of the control Hamiltonians for each qubit.
 """
 function get_control_hamiltonians(self::DigitalQubitPair)
 
+    n = 2
     N = 4
-    subsystem_sizes = [2, 2]
-    a = lower_op(N) 
+    subsystem_sizes = [n, n]
+    a = lower_op(n) 
     a1 = promote_subsys_op(a, subsystem_sizes, 1)
     a2 = promote_subsys_op(a, subsystem_sizes, 2)
 
@@ -191,7 +185,7 @@ of this DigitalQubitPair's current parameter samples.
 Argument 'T' specifies the time integration interval [0,T]
 and dt is the stepsize.
 """
-function get_schrodinger_problems(q::DigitalQudit, T, dt)
+function get_schrodinger_problems(q::DigitalQubitPair, T, dt)
     
     N = q.N
 
@@ -210,18 +204,48 @@ function get_schrodinger_problems(q::DigitalQudit, T, dt)
                     H_drift[j,:,:], H_c_re, H_c_im, 
                     U0, T, n_timesteps
                 ) 
-                for j in eachindex(H_drift)
+                for j in axes(H_drift,1)
             ]
     return probs
 end
 
 
+
+"""
+Returns the unitary for the provided `gate`, appropriately 
+sized to this DigitalQubitPair
+
+If `gate` specifies a single-qubit gate, use kwarg `which_qubit` to 
+specify which qubit to apply the gate to.
+"""
+function unitary(q::DigitalQubitPair, gate::GateType; which_qubit::Int=-1, kwargs...)
+    
+    if gate in SINGLE_QUDIT_GATES
+        Id = Matrix(I,2,2)
+        U  = unitary(gate)
+        if which_qubit==1
+            return kron(U,Id)
+        elseif which_qubit==2
+            return kron(Id,U)
+        else
+            error("Tried to set which_qubit>2 for DigitalQubitPair")
+        end
+    
+    else
+        return unitary(gate, q.N, q.Ne)
+    end
+end
+
+
+
 """
 Parses the control-related variables provided to run_control()
 and optimize_control() for a DigitalQubitPair, adding an extra
-ZeroController controller if needed for single qubit gates. 
+controller with output 0 if needed for single qubit gates. 
 
-controller
+Arguments
+
+    controller
 
         AbstractControl (for single qubit gates) or 
         Vector{AbstractControl} (for two qubit gates)
@@ -249,7 +273,7 @@ controller
 """
 function parse_paired_controls(
         controller::Union{AbstractControl,Vector{AbstractControl}},
-        control_coeffs::Vector{Float64}, 
+        control_coeffs::Vector{Float64},
         which_qubit::Int64
     )
 
@@ -257,20 +281,22 @@ function parse_paired_controls(
     if which_qubit > 0
         @assert which_qubit < 3
         @assert isa(controller, AbstractControl)
-        @assert length(control_coeffs) = controller.N_coeff
-        zero_controller = ZeroControl(0, controller.tf);
+        @assert length(control_coeffs) == controller.N_coeff
+        zero_controller = GRAPEControl(1, controller.tf);
         if which_qubit == 1
-            controller_ = [controller, zero_controller]
+            controller_ = Vector{AbstractControl}([controller, zero_controller])
+            control_coeffs_ = [0.0; 0.0; control_coeffs];
         else
-            controller_ = [zero_controller, controller]
+            controller_ = Vector{AbstractControl}([zero_controller, controller])
+            control_coeffs_ = [control_coeffs; 0.0; 0.0];
         end
-        return controller_, control_coeffs
+        return controller_, control_coeffs_
 
     # Two-Qubit Gates
     else
         @assert isa(controller, Vector{AbstractControl})
         @assert length(controller) == 2
-        @assert length(control_coeffs) = controller[1].N_coeff + controller[2].N_coeff
+        @assert length(control_coeffs) == controller[1].N_coeff + controller[2].N_coeff
         return controller, control_coeffs
     end
 
@@ -284,7 +310,7 @@ the provided `control_coeffs.`
 
 Arguments
 
-    q::DigitalQuditPair         
+    q::DigitalQubitPair         
     
         Qudit on which to run the control 
 
@@ -318,19 +344,80 @@ Arguments
 
 """
 function run_control(
-        q::DigitalQubitPair,
+        device::DigitalQubitPair,
         controller::Union{AbstractControl, Vector{AbstractControl}},
         control_coeffs::Vector{Float64};
         which_qubit::Int=-1,
         kwargs...
     )
     controller_, control_coeffs_ = parse_paired_controls(
-                                    controller, 
-                                    control_coeffs_, 
-                                    which_qubit
+                                        controller, 
+                                        control_coeffs, 
+                                        which_qubit
                                    )
-
-    Psi = @invoke run_control(q::DigitalDevice, controller, _control_coeffs, kwargs...)
-
+    Psi = run_control_base(device, controller_, control_coeffs_; kwargs...)
     return Psi
 end
+
+
+"""
+Optimizes the control signals for this device to implement the 
+provided gate
+
+Arguments
+
+    q::DigitalDevice                DigitalDevice on which to simulate
+                                    the response of the device to the
+                                    control signals
+
+    controller                      AbstractControl or Vector{AbstractControl}             
+
+    control_β0::Vector{Float64}     Initial/pre-optimized control parameters
+
+    gate::GateType                  Which gate to optimize the controls for
+    
+See DigitalDevice.optimize_control() for additional keyword arguments.             
+"""
+function optimize_control(
+        device::DigitalQubitPair,
+        controller::Union{AbstractControl, Vector{AbstractControl}},
+        control_coeffs::Vector{Float64},
+        gate::GateType;
+        which_qubit::Int=-1,
+        kwargs...
+    )
+    controller_, control_coeffs_ = parse_paired_controls(
+                                    controller, 
+                                    control_coeffs, 
+                                    which_qubit
+                                   )
+    Psi = optimize_control_base(device, controller, control_coeffs_, gate, kwargs...)
+    return Psi
+end
+
+
+
+
+#======================================================================
+
+    Conversion to PhysicalDevice
+
+======================================================================#
+
+function PhysicalDevice(digital_qs::DigitalQubitPair; M_spam_order=1e-3)
+
+    # Verify the DigitalQubitPair has only a single parameter sample
+    @assert(length(digital_qs.omega1) == 1)
+    @assert(length(digital_qs.omega2) == 1)
+    @assert(length(digital_qs.xi) == 1)
+
+    # Generate the Mspam matrix
+    N = Ne + Ng;
+    ϵ = M_spam_order * rand(N)
+    M_spam_1 = column_stochastic(ϵ)
+    M_spam_2 = column_stochastic(ϵ)
+    M_spam = kron(M_spam_1, M_spam_2)
+
+    return PhysicalDevice(digital_qs, M_spam)
+end
+

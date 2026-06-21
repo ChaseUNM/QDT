@@ -1,7 +1,3 @@
-using LinearAlgebra, QuantumGateDesign
-include("QDT.jl")
-include("digital_device.jl")
-
 """
 DigitalQudit struct
 
@@ -178,4 +174,34 @@ function get_schrodinger_problems(q::DigitalQudit, T, dt)
             ]
     
     return probs
+end
+
+
+"""
+Returns the unitary for the provided `gate`, appropriately 
+sized to this DigitalQudit
+"""
+function unitary(q::DigitalQudit, gate::GateType; kwargs...)
+    return unitary(gate, q.N, q.Ne)
+end
+
+
+#======================================================================
+
+    Conversion to PhysicalDevice
+
+======================================================================#
+
+function PhysicalDevice(device::DigitalQudit; M_spam_order=1e-3)
+
+    # Verify the DigitalQudit has only a single parameter sample
+    @assert(length(digital_q.omega) == 1)
+    @assert(length(digital_q.xi) == 1)
+
+    # Generate the Mspam matrix
+    N = Ne + Ng;
+    ϵ = M_spam_order * rand(N)
+    M_spam = column_stochastic(ϵ)
+
+    return PhysicalDevice(device, M_spam)
 end

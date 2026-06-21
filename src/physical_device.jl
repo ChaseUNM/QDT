@@ -1,11 +1,16 @@
-"""
-Functions for all PhysicalDevices
-"""
+#======================================================================
 
-using QuantumGateDesign
-include("QDT.jl")
-include("events.jl")
-include("measurement.jl")
+    Generic PhysicalDevice
+
+======================================================================#
+
+
+function PhysicalDevice(device::DigitalDevice, M_spam::AbstractMatrix)
+    device_ = copy(device)
+    observations = Vector{ObservationEvent}(undef, 0)
+    return PhysicalDevice(device_, M_spam, observations)
+end
+
 
 
 """
@@ -68,11 +73,11 @@ Arguments
         n_readout_samples::Int64;
         add_SPAM::Bool=true, 
         target_gate::Union{Nothing,GateType}=nothing,
-        dt::Float64=0.2
+        kwargs...
     )
     
     # Run the control signals
-    Psi = run_control(self.device, controller, control_coeffs, dt=dt)
+    Psi = run_control(self.device, controller, control_coeffs; kwargs...)
     Psi = Psi[1,:,:,:]
 
     # Normalize states
@@ -92,7 +97,7 @@ Arguments
 
     # Calculate gate infidelities?
     if !isnothing(target_gate)
-        U_target = unitary(target_gate, N)
+        U_target = unitary(self.device, target_gate; kwargs...)
         state_infidelity = infidelity(Psi[:,end,:], U_target, size(U_target,2))
         meas_infidelity  = infidelity_population(meas_populations[:,end,:], abs2.(U_target))
     else
@@ -107,3 +112,5 @@ Arguments
     push!(self.observations, obs)
     return obs
 end
+
+

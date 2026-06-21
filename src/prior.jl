@@ -1,5 +1,3 @@
-include("QDT.jl")
-
 using Statistics
 using SpecialFunctions
 

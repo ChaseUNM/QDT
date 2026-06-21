@@ -1,5 +1,3 @@
-using LinearAlgebra, QuantumGateDesign
-
 ##############################################################
 # GateType enum
 ##############################################################
@@ -49,25 +47,26 @@ end
 
 
 
+"""
+Arguments
+
+   gate            GateType, specifying which gate whose 
+                   unitary to return
+
+   which_qudits    Vector of indices specifying which qudits
+                   to apply the gate to 
+
+   n               Vector of subsystem sizes (essential + 
+                   guard)
+   
+   n_ess           Vector of essential level by subsystem
+"""
 function unitary(
             gate::GateType, 
             which_qudits::Vector{Int}, 
             n::Vector{Int},
             n_ess::Vector{Int}
     )
-    # Arguments
-    #
-    #   gate            GateType, specifying which gate whose 
-    #                   unitary to return
-    #
-    #   which_qudits    Vector of indices specifying which qudits
-    #                   to apply the gate to 
-    #
-    #   n               Vector of subsystem sizes (essential + 
-    #                   guard)
-    #   
-    #   n_ess           Vector of essential level by subsystem
-    #
     
     # Single Qudit Gates
     if gate in SINGLE_QUDIT_GATES

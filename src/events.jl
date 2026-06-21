@@ -1,6 +1,3 @@
-include("QDT.jl")
-include("prior.jl")
-include("gates.jl")
 using Dates
 
 """
@@ -69,7 +66,7 @@ Fields
         `measured_populations` array
 
 """
-struct ObservationEvent
+struct ObservationEvent <: AbstractEvent
     
     timestamp::DateTime
     device::PhysicalDevice
@@ -136,7 +133,7 @@ function eval_forward(
     Ψ = run_control(
             digital_device, 
             event_obs.controller, 
-            event_obs.control_coeffs, 
+            event_obs.control_coeffs; 
             dt=event_obs.dt
         )
 
@@ -197,7 +194,7 @@ Fields
         accepted during the MCMC loop
 
 """
-struct CharacterizationEvent
+struct CharacterizationEvent <: AbstractEvent
 
     timestamp::DateTime
     posterior::Posterior
@@ -251,7 +248,7 @@ Fields
     dt_eval::Int64                  Timestep used by the integrators when
                                     evaluating predicted infidelities 
 """
-struct OptimizationEvent
+struct OptimizationEvent <: AbstractEvent
     
     timestamp::DateTime
     gate::GateType

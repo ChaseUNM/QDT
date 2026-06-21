@@ -1,9 +1,6 @@
 #=
 Functions for all DigitalDevices
 =#
-using QuantumGateDesign
-include("QDT.jl")
-include("events.jl")
 
 
 
@@ -41,7 +38,18 @@ Arguments
     dt::Float64             Integration step size    
 
 """
-function run_control(q::DigitalDevice, 
+function run_control(device::DigitalDevice, 
+                     controller::Union{AbstractControl,Vector{AbstractControl}},
+                     control_coeffs::Vector{Float64}; 
+                     kwargs...)
+    return run_control_base(device, controller, control_coeffs; kwargs...)
+end
+
+
+"""
+Default `run_control()` implementation for `DigitalDevice` instances.
+"""
+function run_control_base(device::DigitalDevice, 
                      controller::Union{AbstractControl,Vector{AbstractControl}},
                      control_coeffs::Vector{Float64}; 
                      dt::Float64=0.2)
@@ -49,12 +57,12 @@ function run_control(q::DigitalDevice,
     T = control_duration(controller)
     
     # Create a SchrodingerProb for each of the qudits param samples
-    probs = get_schrodinger_problems(q, T, dt)  
+    probs = get_schrodinger_problems(device, T, dt)  
     n_probs = length(probs)  
     n_timesteps = ceil(Int, T/dt) + 1
 
     # Run simulation for each parameter setting    
-    Psi = zeros(Complex, n_probs, q.N, n_timesteps, q.Ne)
+    Psi = zeros(Complex, n_probs, device.N, n_timesteps, device.Ne)
     for j = 1:n_probs
         state_history = QuantumGateDesign.eval_forward(probs[j], 
                                                        controller, 
@@ -74,7 +82,7 @@ provided gate
 
 Arguments
 
-    q::DigitalDevice                DigitalDevice on which to simulate
+    device::DigitalDevice           DigitalDevice on which to simulate
                                     the response of the device to the
                                     control signals
 
@@ -96,6 +104,20 @@ Arguments
                                     Options to be passed to IPOPT                         
 """
 function optimize_control(
+        device::DigitalDevice, 
+        controller::Union{AbstractControl,Vector{AbstractControl}},
+        control_β0::Vector{Float64},
+        gate::GateType; 
+        kwargs...
+    )
+    return optimize_control_base(device, controller, control_β0, gate; kwargs...)
+end
+
+
+"""
+Default `optimize_control()` implementation for `DigitalDevice` instances.
+"""
+function optimize_control_base(
         q::DigitalDevice, 
         controller::Union{AbstractControl,Vector{AbstractControl}},
         control_β0::Vector{Float64},
