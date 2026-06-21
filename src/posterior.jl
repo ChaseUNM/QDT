@@ -131,10 +131,9 @@ Fields
     prior::Prior
 
         Prior distribution, either a UniformPrior or a KDEPrior
-
-    λ::Real                 Various hyperparameters associated 
-    δ::Real                 with the posterior distribution.
-    risk_scale::Real        
+             
+    δ::Real                 Hyperparameters associated with
+    risk_scale::Real        the posterior distribution.
 """
 struct W2Posterior <: Posterior
 
@@ -142,7 +141,6 @@ struct W2Posterior <: Posterior
     n_obs::Int
     event_obs::Vector{ObservationEvent}
     prior::Prior
-    λ::Real
     δ::Real
     risk_scale::Real
 
@@ -150,16 +148,15 @@ struct W2Posterior <: Posterior
             device::DigitalDevice,
             event_obs::Union{ObservationEvent, Vector{ObservationEvent}},
             prior::Prior; 
-            λ::Real=10.0, δ::Real=2.0, risk_scale::Real=1.0
+            δ::Real=2.0, risk_scale::Real=1.0
         )
-        @assert λ > 0
         if isa(event_obs, ObservationEvent)
             _event_obs = [event_obs]
         else
             _event_obs = event_obs
         end
         n_obs = length(_event_obs)
-        new(device, n_obs, _event_obs, prior, λ, δ, risk_scale)
+        new(device, n_obs, _event_obs, prior, δ, risk_scale)
     end
 
 end
@@ -171,7 +168,7 @@ end
 
 Evaluates the log of the W2-based posterior `post` at the point `θ`
 """
-function Base.log(posterior::W2Posterior, θ::Vector{Float64})
+function Base.log(posterior::W2Posterior, θ::Vector{Float64}, λ::Float64)
 
     prior     = posterior.prior
     event_obs = posterior.event_obs
@@ -218,7 +215,7 @@ function Base.log(posterior::W2Posterior, θ::Vector{Float64})
     
     # Finalize posterior value
     return (
-        -posterior.risk_scale * posterior.λ * mean(Φ .* Nt) + logprior, 
+        -posterior.risk_scale * λ * mean(Φ .* Nt) + logprior, 
         Φ
     )
 

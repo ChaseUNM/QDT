@@ -13,6 +13,8 @@ Fields
     θ0::Vector{Float64}             Initial state from which to start the
                                     markov chain
 
+    λ0::Float64                     Initial setting to λ
+
     iterations::Int                 Number of iterations for the MCMC loop 
                                     to perform. This is NOT the number of 
                                     accepted samples, but rather the number 
@@ -28,6 +30,12 @@ Fields
 
     target_accept::Real             Target for proportion of samples accepted during
                                     the MCMC loop
+
+    σ_min::Float64                  Minimum and maximum values for the singular values
+    σ_max::Float64                  of the proposal's variance matrix Σ
+
+    logλ_min::Float64               Defines the range of the uniform prior for the 
+    logλ_max::Float64               variable log(λ)
 
     rng_seed::Int                   Seed for the random number generator. Set to -1
                                     to use Random.default_rng()
@@ -48,38 +56,54 @@ Returns::NamedTuple, with fields
 function run_w2_chain(
     posterior::Posterior,
     θ0::Vector{Float64};
+    λ0::Float64=1.0,
     iterations::Int=5000,
     burnin::Int=2500,
     thin::Int=2,
     t0_adapt::Int=100,
     target_accept::Real=0.44,
+    σ_min::Float64=1e-10,
+    σ_max::Float64=100.,
+    logλ_min::Float64=1e-3,
+    logλ_max::Float64=1e3,
+    rng::Union{Nothing,AbstractRNG}=nothing,
     rng_seed::Int=-1,
 )
 
     # Select RNG
-    if rng_seed == -1
-        rng = Random.default_rng()
-    else
-        rng = Xoshiro(rng_seed)
+    if rng === nothing
+        if rng_seed == -1
+            rng = Random.default_rng()
+        else
+            rng = Xoshiro(rng_seed)
+        end
     end
 
-    # Allocate space for the samples
-    # generated each iteration
+    # Allocate space for the data generated each iteration
+    λ        = ones(iterations+1)
     n_params = length(θ0)
     n_obs    = posterior.n_obs
-    θ       = zeros(n_params, iterations+1)
-    logpost = zeros(iterations+1)
-    Φ       = zeros(n_obs, iterations+1)
+    θ        = zeros(n_params, iterations+1)
+    logpost  = zeros(iterations+1)
+    Φ        = zeros(n_obs, iterations+1)
     
     # Calculate initial posterior
+    λ[1]    = NaN
+    λ[2]    = λ0
     θ[:,1] .= θ0
-    logpost[1], Φ[:,1] = log(posterior,θ0)
+    logpost[1], Φ[:,1] = log(posterior,θ0,λ0)
 
     # Variables for the proposal strategy
+    # θ-proposals
     μθ = θ0
     Σθ = 0.01 * Matrix(Diagonal(θ0))
     ηθ = 0.0
     γ = k -> (k + 1)^(-2/3)
+    # λ-proposals
+    logλ   = log(λ0)
+    μ_logλ = logλ
+    Σ_logλ = 0.01
+    η_logλ = 0.0
 
     # BEGIN MCMC loop
     accept_theta = 0
@@ -87,13 +111,17 @@ function run_w2_chain(
     θ_prop = zero(θ_curr)
     logpost_curr = logpost[1]
     Φ_curr =  Φ[1]
-    for iter in 1:iterations
+    for iter in 2:(iterations+1)
+
+        #--------------------------
+        #   Sampling θ
+        #--------------------------
         
         # Proposal for next sample
         θ_prop .= θ_curr + exp(ηθ) * sqrt(Σθ) * randn(rng, n_params) 
 
         # Posterior of the proposed sample
-        logpost_prop, Φ_prop = log(posterior, θ_prop)
+        logpost_prop, Φ_prop = log(posterior, θ_prop, exp(logλ))
 
         # Accept the sample? 
         αθ = isfinite(logpost_prop) ? min(1.0, exp(logpost_prop - logpost_curr)) : 0.0
@@ -104,28 +132,78 @@ function run_w2_chain(
         end
 
         # Save iteration data
-        θ[:,iter+1]       .= θ_curr
-        logpost[iter+1]    = logpost_curr
-        Φ[:,iter+1]       .= Φ_curr
+        θ[:,iter]       .= θ_curr
+        logpost[iter]    = logpost_curr
+        Φ[:,iter]       .= Φ_curr
 
         # Adapting the sample proposal scheme
         if iter >= t0_adapt
             dθ = θ_curr - μθ # vector
             μθ .+= γ(iter) * dθ # vector
             Σθ .+= γ(iter) * (dθ*transpose(dθ) - Σθ) # matrix
-            Σθ .= max.(Σθ, 1e-10) # matrix
+            Σθ .= 0.5 * (Σθ + Σθ') 
+            F = svd(Σθ)                            # clamp singular values
+            Σθ = F.U * Diagonal(clamp.(F.S, σ_min, σ_max)) * F.V'
             ηθ += γ(iter) * (αθ - target_accept) # scalar
         end
+
+
+        #--------------------------
+        #   Sampling λ
+        #--------------------------
+
+        # Skip if on the final iteration
+        if iter == iterations
+            break
+        end
+
+        # Proposal for next λ value
+        logλ_prop = logλ + exp(η_logλ) * sqrt(Σ_logλ) * randn(rng)
+        
+        # Posterior of the proposed λ at the current sample
+        # Note we use a uniform prior logλ ∈ [logλ_min, logλ_max]
+        if logλ_prop < logλ_min || logλ_prop > logλ_max
+            logpost_prop = -Inf
+        else
+            logpost_prop, _ = log(posterior, θ_curr, exp(logλ_prop))
+        end        
+
+        # Accept the sample? 
+        αλ = isfinite(logpost_prop) ? min(1.0, exp(logpost_prop - logpost_curr)) : 0.0
+        if rand(rng) < αλ
+            logλ = logλ_prop
+        end
+        λ[iter+1] = exp(logλ)
+
+        # Adapting the λ proposal scheme
+        if iter >= t0_adapt
+            d_logλ = logλ - μ_logλ
+            μ_logλ += γ(iter) * d_logλ
+            Σ_logλ += γ(iter)*(d_logλ^2 - Σ_logλ)
+            Σ_logλ = clamp(Σ_logλ, 1e-16, 1e2)
+            η_logλ += γ(iter) * (αλ - target_accept)
+        end
+
     end
+
 
     # Discard samples within the burnin period and 
     # apply thinning to remaining samples
     kept = collect(burnin:thin:(iterations + 1))
+    λ       = λ[kept]
     θ       = θ[:,kept]
     logpost = logpost[kept]
     Φ       = Φ[:,kept]
 
+    # λ debugging data
+    # adaptive_λ_debug_data = Dict(
+    #     "logλ" => logλ,
+    #     "μ" => μ_logλ,
+    #     "Σ" => Σ_logλ,
+    #     "η" => η_logλ
+    # )
+
     # Package up into a CharacterizationEvent
     accept_ratio = accept_theta / iterations
-    return CharacterizationEvent(posterior, θ, Φ, accept_ratio)
+    return CharacterizationEvent(posterior, λ, θ, Φ, accept_ratio)
 end

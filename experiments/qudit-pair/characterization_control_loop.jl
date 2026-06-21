@@ -1,29 +1,26 @@
-using LinearAlgebra, QuantumGateDesign, Random, Distributions, JLD2, Printf
-using Plots, Plots.PlotMeasures
-include("../../src/QDT.jl")
-include("../../src/physical_device.jl")
-include("../../src/physical_qudit.jl")
-include("../../src/prior.jl")
-include("../../src/posterior.jl")
-include("../../src/characterization.jl")
+using LinearAlgebra, Plots, QuantumGateDesign, Random, Distributions, JLD2, Printf
+include("../src/QDT.jl")
+include("../src/physical_qudit.jl")
+include("../src/prior.jl")
+include("../src/posterior.jl")
+include("../src/characterization.jl")
 
 #====================================================================================
     PARAMETERS
 ====================================================================================#
 
-# Parameters of the physical qudit
-ω  = 4.62
-ξ  = 0.19
-Ne = 2
-Ng = 1
+# Parameters of the physical qudits
+ω1 = 4.62
+ω2 = 4.43
+ξ12 = 0.14
 
 
 # Parameter domain
 ωmin = 4.0
 ωmax = 5.0
-ξmin = ξ-0.1
-ξmax = ξ+0.2
-param_domain = RectangularDomain([ωmin ωmax; ξmin ξmax])
+ξmin = 0.5
+ξmax = 0.21
+param_domain = RectangularDomain([ωmin ωmax; ωmin ωmax; ξmin ξmax])
 
 
 # Rotating frame frequency --- defines the frequency of the control carrier wave
@@ -38,37 +35,39 @@ n_readout_samples = 100000
 # Control parametrization: B-splines
 degree    = 2
 n_splines = 8 
-T         = 50
-nsteps    = 200
-dt        = T/nsteps
 max_control_amplitude = 0.1
-ipopt_options = ["max_iter" => 50, 
-                 "print_level" => 5, 
-                 "limited_memory_max_history" => 250
-                ]
+T_1q_gate = 50
+T_2q_gate = 200
+dt        = 0.25
+nsteps_1q_gate = round(Int, T_1q_gate/dt)
+nsteps_2q_gate = round(Int, T_2q_gate/dt)
+
 
 # Gate set
-gates = [PauliX, PauliZ]
-gate_set = [unitary(g) for g = gates]
-N_gates = length(gates)
+one_qubit_gates  = [PauliX, PauliZ]
+two_qubit_gates  = [CNOT, CZ]
 
 
 # MCMC Parameters
 λ0              = 1.0;
-n_samples       = 20
-mcmc_burnin     = 1000
+n_samples       = 50
+mcmc_burnin     = 2500
 mcmc_thin       = 5
 mcmc_iterations = mcmc_burnin + n_samples*mcmc_thin
-mcmc_seed       = 314159
+
+
 # Initial parameter guesses
-ω0 = ω_rot+0.05
-ξ0 = 0.205
+#      ω1   ω2  ξ12
+α0 = [4.2; 4.5; 0.1]
+
 
 # Prior downweighting power
 downweight_power = 0.1
 
+
 # Number of characterization+optimization iters to perform
 max_iters = 2
+
 
 # Target get infidelity
 epsilon = 1e-4
@@ -79,16 +78,19 @@ epsilon = 1e-4
 ====================================================================================#
 
 # QuditControl used control the DigitalQudit and PhysicalQudit
-controller = FortranBSplineControl(degree, n_splines, T)
+controller_1q_gate = FortranBSplineControl(degree, n_splines, T_1q_gate)
+controller_2q_gate = [
+    FortranBSplineControl(degree, n_splines, T_2q_gate),
+    FortranBSplineControl(degree, n_splines, T_2q_gate)
+]
 
-# DigitalQudit instance used for optimizing control signals
+# DigitalQudit instance used for optimizing single qubit control signals
 digital_q = DigitalQudit(Ne, Ng, ω, ξ, ω_rot)
 
-# PhysicalQudit instance used for simulating real device outcomes
-phys_q = PhysicalQudit(digital_q; M_spam_order=M_spam_order)
+# PhysicalQuditPair instance used for simulating real device outcomes
+phys_device = PhysicalQuditPair(digital_q; M_spam_order=M_spam_order)
 
-# MCMC RNG seed
-mcmc_rng = Xoshiro(mcmc_seed)
+
 
 #====================================================================================
     CONSTANT-CONTROL CHARACTERIZATION
@@ -98,23 +100,22 @@ mcmc_rng = Xoshiro(mcmc_seed)
 
 # Run the constant controls on the physical qudit, measuring noisy
 # population data
-N_coeff = controller.N_coeff
+N_coeff = control.N_coeff
 control_coeffs = zeros(N_coeff)
 control_coeffs[1:Int(N_coeff/2)] .= 0.5*max_control_amplitude
-const_control_obs = run_control(phys_q, controller, control_coeffs, n_readout_samples)
+const_control_obs = run_control(phys_q, control_coeffs, n_readout_samples)
 
 # Prior and posterior
 init_prior     = UniformPrior(param_domain)
-init_posterior = W2Posterior(digital_q, const_control_obs, init_prior)
+init_posterior = W2Posterior(digital_q, const_control_obs, init_prior; λ=λ)
 
 # Run an initial W2-chain inference constant control data
 α0 = [ω0; ξ0]
 const_control_char_event = run_w2_chain(
-                                init_posterior, α0; λ0=λ0,
+                                init_posterior, α0,
                                 iterations=mcmc_iterations,
                                 burnin=mcmc_burnin,
-                                thin=mcmc_thin,
-                                rng=mcmc_rng
+                                thin=mcmc_thin
                             )
 
 
@@ -130,7 +131,7 @@ char_events = Vector{CharacterizationEvent}(undef, max_iters+1)
 char_events[1] = const_control_char_event
 
 # Initial, random control coefficients ("betas") for each gate
-control_coeffs = (0.5 .- rand(controller.N_coeff,N_gates)) * max_control_amplitude
+control_coeffs = (0.5 .- rand(control.N_coeff,N_gates)) * max_control_amplitude
 
 
 for i in 1:max_iters
@@ -147,15 +148,14 @@ for i in 1:max_iters
         @printf("  Optimizing gate %s ...\n", string(gates[j]))
 
         # Run the optimization loop
-        opt_events[i,j] = optimize_control(digital_q, controller, 
-                                           control_coeffs[:,j], gates[j],
+        opt_events[i,j] = optimize_control(digital_q, control_coeffs[:,j], gates[j],
                                            max_amplitude=max_control_amplitude,
                                            options=ipopt_options)
         control_coeffs[:,j] = opt_events[i,j].control_coeffs
 
         # Evaluate the optimized controls on the physical qudit
         @printf("  ... Evaluating gate %s\n", string(gates[j]))
-        obs_events[i,j] = run_control(phys_q, controller, control_coeffs[:,j], 
+        obs_events[i,j] = run_control(phys_q, control_coeffs[:,j], 
                                       n_readout_samples; target_gate=gates[j])
         @printf("  ... Measured Infidelity = %.2e\n", obs_events[i,j].measured_infidelity)
     end
@@ -171,16 +171,19 @@ for i in 1:max_iters
     # Build a new Truncated Gaussian prior from the most recently generated 
     # parameter samples
     prior = TructGaussianPrior(char_events[i].samples, param_domain, downweight_power)
+    
+    # Collect all previous observation events into an array
+    event_obs_i = [const_control_obs; reshape(obs_events[1:i,:], :)]
 
-    # New posterior based on the new prior and new observations
-    posterior = W2Posterior(digital_q, vec(obs_events[i,:]), prior)
+    # New posterior based on the new prior and all previous observations
+    posterior = W2Posterior(digital_q, event_obs_i, prior)
 
     @printf("  ... Running MCMC to sample new posterior\n")
     char_events[i+1] = run_w2_chain(
-                            posterior, prior.μ; λ0=λ0,
+                            posterior, prior.μ,
                             iterations=mcmc_iterations,
                             burnin=mcmc_burnin,
-                            thin=mcmc_thin, rng=mcmc_rng
+                            thin=mcmc_thin
                         )
     @printf("  ... Done.\n")
 end

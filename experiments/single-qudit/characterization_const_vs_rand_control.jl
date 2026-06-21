@@ -1,17 +1,10 @@
-# File: /Users/chase/QDT/characterization_control.jl
-# Purpose: End-to-end characterization + control optimization loop for a single qudit.
-# Notes:
-# - This file runs an iterative loop: generate/optimize controls, run physical experiments (simulated),
-#   infer parameter posteriors, update priors, and repeat until infidelity tolerance is met.
-# - The script is written as a script (top-level); consider refactoring into functions for testability
-#   and reusability (see improvement notes below).
-
 using LinearAlgebra, Plots, QuantumGateDesign, Random, Distributions, JLD2, Printf, LaTeXStrings
-include("../src/QDT.jl")
-include("../src/physical_qudit.jl")
-include("../src/prior.jl")
-include("../src/posterior.jl")
-include("../src/characterization.jl")
+include("../../src/QDT.jl")
+include("../../src/physical_device.jl")
+include("../../src/physical_qudit.jl")
+include("../../src/prior.jl")
+include("../../src/posterior.jl")
+include("../../src/characterization.jl")
 
 
 #====================================================================================
@@ -69,10 +62,10 @@ mcmc_seed = 1234
 ====================================================================================#
 
 # QuditControl used control the DigitalQudit and PhysicalQudit
-control = FortranBSplineControl(degree, n_splines, T)
+controller = FortranBSplineControl(degree, n_splines, T)
 
 # DigitalQudit instance used for optimizing control signals
-digital_q = DigitalQudit(Ne, Ng, ω, ξ, ω_rot, control)
+digital_q = DigitalQudit(Ne, Ng, ω, ξ, ω_rot)
 
 # PhysicalQudit instance used for simulating real device outcomes
 phys_q = PhysicalQudit(digital_q; M_spam_order=M_spam_order)
@@ -87,20 +80,20 @@ phys_q = PhysicalQudit(digital_q; M_spam_order=M_spam_order)
 
 # Run the constant controls on the physical qudit, measuring noisy
 # population data
-N_coeff = control.N_coeff
+N_coeff = controller.N_coeff
 control_coeffs = zeros(N_coeff)
 control_coeffs[1:Int(N_coeff/2)] .= 0.5*max_control_amplitude
-const_control_obs = run_control(phys_q, control_coeffs, n_readout_samples)
+const_control_obs = run_control(phys_q, controller, control_coeffs, n_readout_samples)
 
 # Prior and posterior
 prior     = UniformPrior(param_domain)
-posterior = W2Posterior(digital_q, const_control_obs, prior; λ=λ)
+posterior = W2Posterior(digital_q, const_control_obs, prior)
 
 # Run an initial W2-chain inference constant control data
 α0 = [ω0; ξ0]
 const_control_char_event = run_w2_chain(
-                                posterior, α0,
-                                iterations=mcmc_iterations,
+                                posterior, α0;
+                                λ0=λ, iterations=mcmc_iterations,
                                 burnin=mcmc_burnin,
                                 thin=mcmc_thin,
                                 rng_seed=mcmc_seed
@@ -116,15 +109,16 @@ const_control_char_event = run_w2_chain(
 # Generate and run random controls on the physical qudit
 rng = Xoshiro(rand_control_seed)
 control_coeffs .= max_control_amplitude * (0.5 .- rand(rng, N_coeff))
-rand_control_obs = run_control(phys_q, control_coeffs, n_readout_samples)
+rand_control_obs = run_control(phys_q, controller, control_coeffs, n_readout_samples)
 
 # Posterior based on the random control data
-posterior_rand_control = W2Posterior(digital_q, rand_control_obs, prior; λ=λ)
+posterior_rand_control = W2Posterior(digital_q, rand_control_obs, prior)
 
 # Run an initial W2-chain inference using the random control data
 rand_control_char_event = run_w2_chain(
                                 posterior_rand_control, 
-                                α0,
+                                α0;
+                                λ0=λ,
                                 iterations=mcmc_iterations,
                                 burnin=mcmc_burnin,
                                 thin=mcmc_thin,
@@ -145,14 +139,15 @@ rand_logpost = zeros(n_omega)
 rand_risk    = zeros(n_omega)
 for i = 1:n_omega
     # Constant control
-    (logpost, Φ) = log(posterior, [omegas[i], ξ])
+    (logpost, Φ) = log(posterior, [omegas[i], ξ], λ)
     const_risk[i] = Φ[1]
     const_logpost[i] = logpost
     # Random control
-    (logpost, Φ) = log(posterior_rand_control, [omegas[i], ξ])
+    (logpost, Φ) = log(posterior_rand_control, [omegas[i], ξ], λ)
     rand_risk[i] = Φ[1]
     rand_logpost[i] = logpost
 end
+
 
 #====================================================================================
     PLOT RISK vs. OMEGA
@@ -173,7 +168,7 @@ f = plot(
 plot!(omegas, rand_risk, linewidth=2, label="Random Control")
 plot!(omegas, const_risk, linewidth=2, label="Const. Control")
 
-savefig(f, "const_vs_rand_control_W2_risk.svg")
+# savefig(f, "const_vs_rand_control_W2_risk.svg")
 
 
 #====================================================================================
@@ -194,5 +189,5 @@ f = plot(
 plot!(omegas, exp.(rand_logpost), label="Random Control")
 plot!(omegas, exp.(const_logpost), label="Const. Control")
 
-savefig(f, "const_vs_rand_control_posterior.svg")
+# savefig(f, "const_vs_rand_control_posterior.svg")
 

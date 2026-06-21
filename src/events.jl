@@ -73,6 +73,7 @@ struct ObservationEvent
     
     timestamp::DateTime
     device::PhysicalDevice
+    controller::Union{AbstractControl,Vector{AbstractControl}}
     control_coeffs::Union{Vector{Float64},Vector{Vector{Float64}}}    
     measured_populations::Array{Float64,3}
     measured_populations_postprocessed::Array{Float64,3}
@@ -83,6 +84,7 @@ struct ObservationEvent
 
     function ObservationEvent(
             device::PhysicalDevice,
+            controller::Union{AbstractControl,Vector{AbstractControl}},
             control_coeffs::Union{Vector{Float64},Vector{Vector{Float64}}},
             measured_populations::Array{Float64,3},
             gate::Union{Nothing,GateType}=nothing,
@@ -94,9 +96,9 @@ struct ObservationEvent
         measured_populations_postprocessed = Array{Float64,3}(undef, size(measured_populations))
         measured_populations_postprocessed[1,1,1] = -1
         new(
-            timestamp, device, copy(control_coeffs), measured_populations, 
-            measured_populations_postprocessed, gate, state_infidelity, 
-            meas_infidelity, dt
+            timestamp, device, controller, copy(control_coeffs), 
+            measured_populations, measured_populations_postprocessed, 
+            gate, state_infidelity, meas_infidelity, dt
         ) 
     end
 
@@ -131,11 +133,16 @@ function eval_forward(
 
     # Evaluate the control signals used during 
     # the ObservationEvent on the digital device
-    Ψ = run_control(digital_device, event_obs.control_coeffs, dt=event_obs.dt)
+    Ψ = run_control(
+            digital_device, 
+            event_obs.controller, 
+            event_obs.control_coeffs, 
+            dt=event_obs.dt
+        )
 
     # Timestep at which Ψ was be computed
     dt = event_obs.dt
-    T = get_control_time(digital_device)
+    T = control_duration(event_obs.controller)
     t_grid = collect(0:dt:T)
 
     # Convert to state populations
@@ -195,19 +202,21 @@ struct CharacterizationEvent
     timestamp::DateTime
     posterior::Posterior
     n_samples::Int64
+    lambdas::Vector{Float64}
     samples::Matrix{Float64}
     risk::Matrix{Float64}
     accept_ratio::Float64
 
     function CharacterizationEvent(
-            posterior::Posterior,    
+            posterior::Posterior,   
+            lambdas::Vector{Float64}, 
             samples::Matrix{Float64},
             risk::Matrix{Float64},
             accept_ratio::Float64
         )
         timestamp = now()
         n_samples = size(samples,1)
-        new(timestamp, posterior, n_samples, samples, risk, accept_ratio)
+        new(timestamp, posterior, n_samples, lambdas, samples, risk, accept_ratio)
     end
 end
 
@@ -247,6 +256,7 @@ struct OptimizationEvent
     timestamp::DateTime
     gate::GateType
     params::Matrix{Float64}
+    controller::Union{AbstractControl,Vector{AbstractControl}}
     control_coeffs::Union{Vector{Float64},Vector{Vector{Float64}}}    
     predicted_infidelities::Vector{Float64}
     dt_opt::Float64
@@ -255,13 +265,18 @@ struct OptimizationEvent
     function OptimizationEvent(
                 gate::GateType,
                 params::Matrix{Float64},
+                controller::Union{AbstractControl,Vector{AbstractControl}},
                 control_coeffs::Union{Vector{Float64},Vector{Vector{Float64}}},
                 predicted_infidelities::Vector{Float64},
                 dt_opt::Float64=-1,
                 dt_eval::Float64=-1
         )
         timestamp = now()
-        new(timestamp, gate, params, control_coeffs, predicted_infidelities, dt_opt, dt_eval) 
+        new(
+            timestamp, gate, params, 
+            controller, control_coeffs, 
+            predicted_infidelities, dt_opt, dt_eval
+        ) 
     end
 
 end
