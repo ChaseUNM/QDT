@@ -1,7 +1,7 @@
 ##############################################################
 # GateType enum
 ##############################################################
-@enum GateType PauliX PauliY PauliZ Hadamard CNOT CNOT12 CNOT21 CZ
+@enum GateType PauliX PauliY PauliZ Hadamard CNOT CNOT12 CNOT21 CZ SWAP
 
 SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard]
 
@@ -26,6 +26,8 @@ function unitary(gate::GateType)
         return CNOT_gate()
     elseif gate == CZ
         return Matrix(Diagonal([1,1,1,-1]))
+    elseif gate == SWAP
+        return Matrix([1 0 0 0; 0 0 1 0; 0 1 0 0; 0 0 0 1])
     else
         throw("GateType::unitary() Gate note recognized")
     end
