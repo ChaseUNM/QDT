@@ -84,6 +84,50 @@ function log_prior_theta_w2_quantum_multi(
     return lp_total
 end
 
+# this function will use a multi-variate Gaussian as the log prior
+function log_prior_theta_w2_quantum_multi(
+    ω::Vector{<:Real};
+    ωmin::AbstractVector{<:Real}, ωmax::AbstractVector{<:Real}, 
+    prior::Union{Nothing, Distribution} = nothing
+)   
+
+    if !(any(ωmin .<= ω .<= ωmax))
+        return -Inf
+    end
+    if isnothing(prior)
+        return sum([logpdf(Uniform(ωmin[i], ωmax[i]), 1.5) for i in 1:length(ωmin)])
+    else 
+        return log(pdf(prior))
+    end
+end
+
+#adaptive learning parameter version of above 
+function log_prior_theta_w2_quantum_multi_adaptive(
+    ω::Vector{<:Real},
+    λ_log::Real;
+    ωmin::AbstractVector{<:Real}, ωmax::AbstractVector{<:Real},
+    λ_log_min::Real = log(0.1),
+    λ_log_max::Real = log(50.0),
+    λ_log_prior_mean::Real=log(5.0),
+    λ_log_prior_sd::Real = 0.3,
+    prior::Union{Nothing, Distribution} = nothing
+)   
+
+    if !(all(ωmin .<= ω .<= ωmax)) || !(λ_log_min <= λ_log <= λ_log_max)
+        # println("Returning infinity")
+        return -Inf
+    end
+    if isnothing(prior)
+        # println("Prior is nothing")
+        lp_ω = sum([logpdf(Uniform(ωmin[i], ωmax[i]), ω[i]) for i in eachindex(ω)])
+        lp_λ = log(pdf(Normal(λ_log_prior_mean, λ_log_prior_sd), λ_log))
+        return lp_ω + lp_λ
+    else 
+        lp_ω = log(pdf(prior, ω))
+        lp_λ = log(pdf(Normal(λ_log_prior_mean, λ_log_prior_sd), λ_log))
+        return lp_ω + lp_λ
+    end
+end
 
 function log_prior_theta_w2_quantum(
     ω::Real, 
@@ -339,7 +383,12 @@ function trace_wasserstein_squared_loss_quantum(ω, ωr, degree, n_splines, U0, 
         # println(T)
         # println(nsteps)
         # println(pcof_optimal_total)
-        
+        # println("ω: ", ω)
+        # println(degree[i])
+        # println(n_splines[i])
+        # println(T[i])
+        # println(nsteps[i])
+        # println(pcof_optimal_total[i])
         event_sim = forward_event_quantum(ω, ωr, degree[i], n_splines[i], U0, T[i], nsteps[i], pcof_optimal_total[i])
         event_obs = event_obs_total[i]
         # println("event_sim: ")
@@ -388,7 +437,7 @@ function trace_wasserstein_squared_loss_quantum_multi(ω, ωr, degree, n_splines
         # println(pcof_optimal_total)
         # println(pcof_optimal_total[i][1])
         # println(pcof_optimal_total[i][2])
-        event_sim = forward_event_quantum_multi([2,2], [0,0], ω_vec, ωr, [0.0,0.0], 0.0, cross_kerr, degree[i], n_splines[i], U0, T[i], nsteps[i], [pcof_optimal_total[i][1], pcof_optimal_total[i][2]], carrier_freqs)
+        event_sim,_, _ = forward_event_quantum_multi([2,2], [0,0], ω_vec, ωr, [0.0,0.0], 0.0, cross_kerr, degree[i], n_splines[i], U0, T[i], nsteps[i], [pcof_optimal_total[i][1], pcof_optimal_total[i][2]], carrier_freqs)
         event_obs = event_obs_total[i]
         # println("event_sim: ")
         # display(event_sim)
@@ -502,7 +551,7 @@ function log_w2_posterior_quantum_multi(
     carrier_freqs::AbstractVector,
     event_obs::AbstractArray, 
     total_data_count::Real; 
-    priors::AbstractVector{<:Union{Nothing, NamedTuple, Distribution}} = fill(nothing, length(ω)),
+    prior::Union{Nothing, NamedTuple, Distribution} = nothing,
     λ::Real, 
     scale_factor::Real, 
     risk_scale::Real=1.0, 
@@ -510,7 +559,7 @@ function log_w2_posterior_quantum_multi(
     ωmax::AbstractVector{<:Real}, 
     δ::Real, 
     kwargs...)
-    lp = log_prior_theta_w2_quantum_multi(ω; ωmin = ωmin, ωmax = ωmax, priors = priors)
+    lp = log_prior_theta_w2_quantum_multi(ω; ωmin = ωmin, ωmax = ωmax, prior = prior)
     if !isfinite(lp)
         return -Inf, Inf, -Inf, Inf
     end
@@ -518,6 +567,39 @@ function log_w2_posterior_quantum_multi(
     return -risk_scale * λ * scale_factor * Φ + lp, Φ, -risk_scale * λ * scale_factor * Φ, lp
 end
 
+function log_w2_posterior_quantum_multi_adaptive(
+    ω::Vector{Float64}, 
+    ωr::Vector{Float64}, 
+    degree::Vector{<:Real},
+    n_splines::Vector{<:Real}, 
+    U0::AbstractMatrix, 
+    T::Vector{<:Real}, 
+    nsteps::Vector{<:Real}, 
+    pcof_optimal::AbstractVector,
+    carrier_freqs::AbstractVector,
+    event_obs::AbstractArray, 
+    total_data_count::Real; 
+    prior::Union{Nothing, NamedTuple, Distribution} = nothing,
+    λ_log::Real, 
+    scale_factor::Real, 
+    risk_scale::Real=1.0, 
+    ωmin::AbstractVector{<:Real}, 
+    ωmax::AbstractVector{<:Real},
+    λ_log_min::Real = log(0.1), 
+    λ_log_max::Real = log(50.0), 
+    λ_log_prior_mean::Real=log(5.0),
+    λ_log_prior_sd::Real = 0.3,
+    δ::Real, 
+    kwargs...)
+    lp = log_prior_theta_w2_quantum_multi_adaptive(ω, λ_log; ωmin = ωmin, ωmax = ωmax, λ_log_min = λ_log_min, λ_log_max = λ_log_max, λ_log_prior_mean = λ_log_prior_mean, λ_log_prior_sd = λ_log_prior_sd, prior = prior)
+    # println("lp: $lp")
+    if !isfinite(lp)
+        return -Inf, Inf, -Inf, Inf
+    end
+    Φ, _ = trace_wasserstein_squared_loss_quantum_multi(ω, ωr, degree, n_splines, U0, T, nsteps, pcof_optimal, event_obs, total_data_count, carrier_freqs; δ=δ, kwargs...)
+    λ = exp(λ_log)
+    return -risk_scale * λ * scale_factor * Φ + lp, Φ, -risk_scale * λ * scale_factor * Φ, lp
+end
 
 function log_w2_posterior_quantum_sum(
     ω, 
@@ -744,7 +826,7 @@ function run_w2_chain_quantum_adaptive(
     rng=Random.default_rng(),
     kwargs...
 )
-    @assert λ > 0
+    @assert exp(λ_log0) > 0
     # run the following code for each chain, starting from initial conditions
     # create empty vectors to concatenate each chain
     initial_sample_length = length(ω0_vec)
@@ -756,8 +838,8 @@ function run_w2_chain_quantum_adaptive(
     diff_samples = zeros((iterations + 1)*initial_sample_length, 4)
     diagnostic_chain = zeros(chain_kept_samples, initial_sample_length)
     diagnostic_chain_λ = zeros(chain_kept_samples, initial_sample_length)
-    hyperparam_history_ω = zeros(initial_sample_length, iterations + 1, 3)
-    hyperparam_history_λ_log = zeros(initial_sample_length, iterations + 1, 3)
+    hyperparam_history_ω = zeros(initial_sample_length, iterations + 1, 4)
+    hyperparam_history_λ_log = zeros(initial_sample_length, iterations + 1, 4)
     proposed_ω = zeros(initial_sample_length, iterations)
     proposed_λ_log = zeros(initial_sample_length, iterations)
     count = 1
@@ -793,11 +875,11 @@ function run_w2_chain_quantum_adaptive(
         accept_λ_log = 0
 
         μθ, μ_λ_log = ω0, λ_log0
-        Σθ, Σ_λ_log  = 0.01, 0.1
+        Σθ, Σ_λ_log  = 0.05, 0.1
         ηθ, η_λ_log = 0.0, 0.0
         γ = k -> (k + 1)^(-2/3)
-        hyperparam_history_ω[count,1,:] .= [μθ, Σθ, ηθ]
-        hyperparam_history_λ_log[count,1,:] .= [μ_λ_log, Σ_λ_log, η_λ_log]
+        hyperparam_history_ω[count,1,:] .= [0.0, μθ, Σθ, ηθ]
+        hyperparam_history_λ_log[count,1,:] .= [0.0, μ_λ_log, Σ_λ_log, η_λ_log]
         for iter in 1:iterations
             
             ω_prop = ω_curr + exp(ηθ) * sqrt(Σθ) * randn(rng)
@@ -820,6 +902,8 @@ function run_w2_chain_quantum_adaptive(
                 risk_scale=risk_scale,
                 ωmin=ωmin,
                 ωmax=ωmax,
+                λ_log_min=λ_log_min,
+                λ_log_max=λ_log_max,
                 δ=δ,
                 kwargs...
             )
@@ -842,7 +926,8 @@ function run_w2_chain_quantum_adaptive(
             chain[iter + 1, 4] = Φ_curr
             chain[iter + 1, 5] = Φ_curr_scaled
             chain[iter + 1, 6] = logprior_curr
-
+            
+            dθ = ω_curr - μθ
             if iter >= t0_adapt
                 dθ = ω_curr - μθ
                 μθ += γ(iter) * dθ
@@ -850,7 +935,7 @@ function run_w2_chain_quantum_adaptive(
                 Σθ = max(Σθ, 1e-10)
                 ηθ += γ(iter) * (αθ - target_accept)
             end
-            hyperparam_history_ω[count,iter + 1,:] .= [μθ, Σθ, ηθ]
+            hyperparam_history_ω[count,iter + 1,:] .= [dθ, μθ, Σθ, ηθ]
             # println("λ current: ", exp(λ_log_curr))
             λ_log_prop = λ_log_curr + exp(η_λ_log) * sqrt(Σ_λ_log) * randn(rng)
             # println("λ prop: ", exp(λ_log_prop))
@@ -888,6 +973,7 @@ function run_w2_chain_quantum_adaptive(
             accept_lambda_vec[count] = accept_λ_log
             chain[iter + 1, 2] = exp(λ_log_curr)
             chain[iter + 1, 3] = logpost_curr
+            d_λ_log = λ_log_curr - μ_λ_log
             if iter >= t0_adapt
                 d_λ_log = λ_log_curr - μ_λ_log
                 μ_λ_log += γ(iter) * d_λ_log
@@ -895,7 +981,7 @@ function run_w2_chain_quantum_adaptive(
                 Σ_λ_log = max(Σ_λ_log, 1e-10)
                 η_λ_log += γ(iter) * (αλ - target_accept)
             end
-            hyperparam_history_λ_log[count,iter + 1,:] .= [μ_λ_log, Σ_λ_log, η_λ_log]
+            hyperparam_history_λ_log[count,iter + 1,:] .= [d_λ_log, μ_λ_log, Σ_λ_log, η_λ_log]
         end
         kept = collect(burnin:thin:(iterations + 1))
         chain_post = chain[kept, :]
@@ -1067,7 +1153,7 @@ function run_w2_chain_quantum_multi(
     event_obs_total;
     
     θ::AbstractMatrix{<:Real} = zeros(size(θ)), 
-    priors::AbstractVector{<:Union{Nothing, NamedTuple, Distribution}} = fill(nothing, size(θ, 2)),
+    prior::Union{Nothing, NamedTuple, Distribution} = nothing,
     ωr::AbstractVector{<:Real} = zeros(size(θ, 2)-1), 
     degree::Vector{<:Real}, 
     n_splines::Vector{<:Real}, 
@@ -1159,7 +1245,7 @@ function run_w2_chain_quantum_multi(
                 carrier_freqs,
                 event_obs_total,
                 total_data_count;
-                priors = priors, 
+                prior = prior, 
                 λ=λ,
                 scale_factor=scale_factor,
                 risk_scale=risk_scale,
@@ -1207,6 +1293,223 @@ function run_w2_chain_quantum_multi(
         hyperparam_history = hyperparam_history,
         λ = λ,
         accept_theta = accept_theta_vec ./ iterations
+    )
+end
+
+
+function run_w2_chain_quantum_multi_adaptive(
+    event_obs_total;
+    
+    θ::AbstractMatrix{<:Real} = zeros(size(θ)), 
+    prior::Union{Nothing, NamedTuple, Distribution} = nothing,
+    ωr::AbstractVector{<:Real} = zeros(size(θ, 2)-1), 
+    degree::Vector{<:Real}, 
+    n_splines::Vector{<:Real}, 
+    U0, 
+    T::Vector{<:Real}, 
+    nsteps::Vector{<:Real}, 
+    pcof_optimal_total,
+    carrier_freqs::AbstractVector,
+    total_data_count,
+    λ_log0::Real=log(10.0),
+    iterations::Int=5000,
+    burnin::Int=2500,
+    thin::Int=2,
+    ωmin::AbstractVector{<:Real}=zeros(size(θ, 2)),
+    ωmax::AbstractVector{<:Real}=ones(size(θ, 2)),
+    λ_log_min::Real = log(0.1),
+    λ_log_max::Real = log(50.0),
+    λ_log_prior_mean::Real=log(5.0),
+    λ_log_prior_sd::Real = 0.3,
+    δ::Real=2.0,
+    scale_factor::Real=length(event_obs_total[1,:,1]),
+    ridge_param::Real=1e-10,
+    risk_scale::Real=1.0,
+    t0_adapt::Int=100,
+    target_accept::Real=0.23,
+    initial_cov_p = nothing,
+    rng=Random.default_rng(),
+    kwargs...
+)
+    num_chains, params = size(θ)
+    @assert exp(λ_log0) > 0
+    # println("event obs")
+    # display(event_obs_total[1])
+    # display(event_obs_total[2])
+    # display(event_obs_total[3])
+    # display(event_obs_total[4])
+    chain_samples = Matrix{Any}(undef, (iterations + 1)*num_chains, 6)
+    accept_theta_vec = zeros(num_chains)
+    accept_lambda_vec = zeros(num_chains)
+    chain_kept_samples = length(collect(burnin:thin:iterations + 1))
+    total_chain_kept_samples = Matrix{Any}(undef, num_chains*chain_kept_samples, 6)
+    diagnostic_chain = zeros(chain_kept_samples, num_chains, params)
+    hyperparam_history = Array{Any}(undef, num_chains, iterations + 1, 3)
+    hyperparam_history_λ_log = zeros(num_chains, iterations + 1, 4)
+    diagnostic_chain_λ = zeros(chain_kept_samples, num_chains)
+    count = 1
+    for ω0 in eachrow(θ)
+        ω0 = collect(ω0)
+        chain = Matrix{Any}(undef, iterations + 1, 6)
+        logpost0, Φ0, Φ0_scaled, logprior0 = log_w2_posterior_quantum_multi_adaptive(
+            ω0, 
+            ωr, 
+            degree, 
+            n_splines, 
+            U0, 
+            T, 
+            nsteps, 
+            pcof_optimal_total,
+            carrier_freqs,
+            event_obs_total,
+            total_data_count;
+            prior = prior, 
+            λ_log=λ_log0,
+            scale_factor=scale_factor,
+            risk_scale=risk_scale,
+            ωmin=ωmin,
+            ωmax=ωmax,
+            λ_log_min=λ_log_min,
+            λ_log_max=λ_log_max,
+            λ_log_prior_mean,
+            λ_log_prior_sd,
+            δ=δ,
+            kwargs...
+        )
+        chain[1, :] .= [ω0, exp(λ_log0), logpost0, Φ0, Φ0_scaled, logprior0]
+
+        ω_curr, λ_log_curr = deepcopy(ω0), λ_log0
+        logpost_curr, Φ_curr, Φ_curr_scaled, logprior_curr = logpost0, Φ0, Φ0_scaled, logprior0
+
+        accept_theta = 0
+        accept_λ_log = 0
+
+        μθ, μ_λ_log = deepcopy(ω0), λ_log0
+        Σθ = initial_cov_p === nothing ? Diagonal(((ωmax .- ωmin) ./ 20).^2) |> Matrix : Matrix(initial_cov_p)
+        Σ_λ_log = 0.1
+        ηθ, η_λ_log = 0.0, 0.0
+        γ = k -> (k + 1)^(-2/3)
+        hyperparam_history[count, 1,:] = [μθ, Σθ, ηθ]
+        hyperparam_history_λ_log[count,1,:] .= [0.0, μ_λ_log, Σ_λ_log, η_λ_log]
+        for iter in 1:iterations
+            if iter % 1000 == 0
+                println("Iteration $iter")
+            end
+            rand_number = randn(rng, params)
+            
+            Lp = cholesky(Symmetric(Σθ + ridge_param * I), check = false).L
+            ω_prop = ω_curr + exp(ηθ) * Lp * rand_number
+            # println(ω_prop)
+            logpost_prop, Φ_prop,Φ_prop_scaled, logprior_prop = log_w2_posterior_quantum_multi_adaptive(
+                ω_prop, 
+                ωr, 
+                degree, 
+                n_splines, 
+                U0, 
+                T, 
+                nsteps, 
+                pcof_optimal_total,
+                carrier_freqs,
+                event_obs_total,
+                total_data_count;
+                prior = prior, 
+                λ_log=λ_log_curr,
+                scale_factor=scale_factor,
+                risk_scale=risk_scale,
+                ωmin=ωmin,
+                ωmax=ωmax,
+                λ_log_min=λ_log_min,
+                λ_log_max=λ_log_max,
+                λ_log_prior_mean,
+                λ_log_prior_sd,
+                δ=δ,
+                kwargs...
+            )
+            # println(logpost_prop)
+            αθ = isfinite(logpost_prop) ? min(1.0, exp(logpost_prop - logpost_curr)) : 0.0
+
+            if rand(rng) < αθ
+                ω_curr, logpost_curr, Φ_curr, Φ_curr_scaled, logprior_curr = ω_prop, logpost_prop, Φ_prop, Φ_prop_scaled, logprior_prop
+                accept_theta += 1
+            end
+
+            accept_theta_vec[count] = accept_theta
+            chain[iter + 1, 1] = ω_curr
+            chain[iter + 1, 3] = logpost_curr
+            chain[iter + 1, 4] = Φ_curr
+            chain[iter + 1, 5] = Φ_curr_scaled
+            chain[iter + 1, 6] = logprior_curr
+
+            if iter >= t0_adapt
+                dθ = ω_curr - μθ
+                μθ += γ(iter) * dθ
+                Σθ += γ(iter) * (dθ*dθ' - Σθ)
+                Σθ = clamp_eigs(Σθ, min_eig = 1E-4 , max_eig = 1.0)
+                ηθ += γ(iter) * (αθ - target_accept)
+            end
+            hyperparam_history[count, iter + 1, :] = [μθ, Σθ, ηθ]
+
+            λ_log_prop = λ_log_curr + exp(η_λ_log) * sqrt(Σ_λ_log) * randn(rng)
+
+            logpost_prop, _ ,_ ,_  = log_w2_posterior_quantum_multi_adaptive(
+                ω_curr, 
+                ωr, 
+                degree, 
+                n_splines, 
+                U0, 
+                T, 
+                nsteps, 
+                pcof_optimal_total,
+                carrier_freqs,
+                event_obs_total,
+                total_data_count;
+                prior = prior, 
+                λ_log=λ_log_prop,
+                scale_factor=scale_factor,
+                risk_scale=risk_scale,
+                ωmin=ωmin,
+                ωmax=ωmax,
+                λ_log_min=λ_log_min,
+                λ_log_max=λ_log_max,
+                δ=δ,
+                kwargs...
+            )
+            αλ = isfinite(logpost_prop) ? min(1.0, exp(logpost_prop - logpost_curr)) : 0.0
+            if rand(rng) < αλ
+                    λ_log_curr, logpost_curr = λ_log_prop, logpost_prop
+                    accept_λ_log += 1
+            end
+            accept_lambda_vec[count] = accept_λ_log
+            chain[iter + 1, 2] = exp(λ_log_curr)
+            chain[iter + 1, 3] = logpost_curr
+            d_λ_log = λ_log_curr - μ_λ_log
+            if iter >= t0_adapt
+                d_λ_log = λ_log_curr - μ_λ_log
+                μ_λ_log += γ(iter) * d_λ_log
+                Σ_λ_log += γ(iter) * (d_λ_log^2 - Σ_λ_log)
+                Σ_λ_log = max(Σ_λ_log, 1e-10)
+                η_λ_log += γ(iter) * (αλ - target_accept)
+            end
+            hyperparam_history_λ_log[count,iter + 1,:] .= [d_λ_log, μ_λ_log, Σ_λ_log, η_λ_log]
+        end
+ 
+        kept = collect(burnin:thin:(iterations + 1))
+        chain_post = chain[kept, :]
+        chain_samples[(count - 1)*iterations + 1: count*iterations + 1,:] .= chain
+        total_chain_kept_samples[(count - 1)*chain_kept_samples + 1: count*chain_kept_samples,:] .= chain_post
+        diagnostic_chain[:,count,:] .= stack(chain_post[:,1],dims = 1)
+        diagnostic_chain_λ[:,count] .= chain_post[:,2]
+        count += 1
+    end
+    
+    return (
+        chain = chain_samples,
+        diagnostic_chain = diagnostic_chain,
+        diagnostic_chain_λ = diagnostic_chain_λ,
+        chain_post = total_chain_kept_samples,
+        hyperparam_history = hyperparam_history,
+        accept_theta = accept_theta_vec ./ iterations,
+        accept_lambda = accept_lambda_vec ./ iterations
     )
 end
 

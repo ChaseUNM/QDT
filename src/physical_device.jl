@@ -219,8 +219,8 @@ function measure_infidelity(
     observed_populations = abs2.(psi_final)
     observed_history = abs2.(psi_history)
     if add_SPAM
-        println("M_Spam: ")
-        display(q.M_spam)
+        # println("M_Spam: ")
+        # display(q.M_spam)
         observed_populations = sample_quantum_state(
                                     n_readout_samples, 
                                     q.M_spam * observed_populations

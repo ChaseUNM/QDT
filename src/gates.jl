@@ -3,9 +3,9 @@ using LinearAlgebra, QuantumGateDesign
 ##############################################################
 # GateType enum
 ##############################################################
-@enum GateType PauliX PauliY PauliZ Hadamard CNOT
+@enum GateType PauliX PauliY PauliZ Hadamard Tgate CNOT
 
-SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard]
+SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard, Tgate]
 
 ##############################################################
 # Functions to get unitaries
@@ -22,6 +22,8 @@ function unitary(gate::GateType)
         return PauliZ_gate()
     elseif gate == Hadamard
         return Hadamard_gate()
+    elseif gate == Tgate
+        return T_gate()
     elseif gate == CNOT
         return CNOT_gate()
     else

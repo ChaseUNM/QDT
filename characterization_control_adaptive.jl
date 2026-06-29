@@ -17,11 +17,11 @@ include("src/postprocessing.jl")
 include("src/forward_model_quantum.jl")
 
 
-rand_numbers = 1
+rand_numbers = 4
 # Random_seed_list = rand(1:100000, rand_numbers)
 # Random_seed_list_2 = collect(101:101)
 
-
+downweight_power_list = [0.9,0.8,0.7,0.6]
 
 λ = 0.1
 
@@ -56,10 +56,14 @@ for k in 1:rand_numbers
 
     # Control parametrization: B-splines
     degree = 2
+    n_splines_init = 3
     n_splines = 16
     T = 50
+    T_init = T/4
     nsteps = 200
+
     dt = T/nsteps
+    nsteps_init = Int(T_init/dt)
 
     # Create a control object (Fortran BSpline wrapper)
     control = FortranBSplineControl(degree, n_splines, T)
@@ -76,13 +80,13 @@ for k in 1:rand_numbers
     prob = SchrodingerProb(Float64[0 0; 0 delta], real_control_ops, imag_control_ops, U0, T, nsteps)
 
     # Gate set and timing for per-gate control optimization
-    gates = [PauliX, PauliY, PauliZ, Hadamard]
-    gate_set = [PauliX_gate(), PauliY_gate(), PauliZ_gate(), Hadamard_gate()]
+    gates = [PauliX, PauliY, Hadamard, Tgate]
+    gate_set = [PauliX_gate(), PauliY_gate(), Hadamard_gate(), T_gate()]
     N_gates = length(gates)
-    T_gate = 50
+    # T_gate = 50
 
     # Measurement/SPAM settings
-    M_spam_order = 1e-4
+    M_spam_order = 1E-4
     n_readout_samples = 100000
 
     # Create a PhysicalQudit instance used for simulating real device outcomes
@@ -96,7 +100,7 @@ for k in 1:rand_numbers
     delta = ω - ωr
     U0 = [1 0; 0 1]
     prob = SchrodingerProb(Float64[0 0; 0 delta], real_control_ops, imag_control_ops, U0, T, nsteps)
-    gates = [PauliX, PauliY, PauliZ, Hadamard]
+    gates = [PauliX, PauliY, Hadamard, Tgate]
     epsilon = 1E-4
 
     # This initial physical qudit is used for initial measured infidelities, but this is not necessary at all, can completely ignore as measured infidelities aren't even plotted until after the first characterization. 
@@ -124,17 +128,17 @@ for k in 1:rand_numbers
 
     # determine downweighting parameters and kernel type for creating the kernel density estimation. 
     # the two options are "Normal" and "Beta" kernels
-    downweight_power = 0.7
+    downweight_power = downweight_power_list[k]
     bandwidth = 0.1
     dist_func = "GaussianFit_Seeded"
 
     # characterization iteration parameters, many iterations, 20% burn-in and thinning every 20 samples
-    iterations = 10000
-    burnin = 8000
+    iterations = 5000
+    burnin = 3000
     thin = 2
     total_samples = length(collect(burnin:thin:iterations))
 
-    degree_init = 0
+    degree_init = 2
 
 
     experiment_name = "results/characterization_control_$(dist_func)_power_$(downweight_power)_samples_$(total_samples)_degree_$(degree_init)_λ_adaptive"
@@ -162,10 +166,9 @@ for k in 1:rand_numbers
     end 
 
     
-    
     ωmin = 4.0
     ωmax = 5.0
-    n_pts = 1000
+    n_pts = 1001
     ωs = LinRange(ωmin, ωmax, n_pts)
     xs = LinRange(ωmin, ωmax, n_pts)
 
@@ -177,7 +180,7 @@ for k in 1:rand_numbers
     if run_loop
         ω0_history = []
         area_history = []
-        ω0 = Vector(LinRange(ωmin + 0.1*(ωmax - ωmin), ωmax - 0.1*(ωmax - ωmin), 4))
+        ω0 = Vector(LinRange(ωmin + 0.1*(ωmax - ωmin), ωmax - 0.1*(ωmax - ωmin), 5))
         # ω0 = [4.5]
         push!(ω0_history, ω0)
         
@@ -188,6 +191,7 @@ for k in 1:rand_numbers
         # Dictionaries indexed by iteration -> per-gate dictionaries
         control_dict_total = OrderedDict{Int, Dict{GateType, QuditControl}}()
         q_pred_infidelity_total = OrderedDict{Int, Dict{GateType, Float64}}()
+        q_pred_infidelity_total_updated = OrderedDict{Int, Dict{GateType, Float64}}()
         q_p_meas_infidelity_total = OrderedDict{Int, Dict{GateType, Float64}}()
         q_s_meas_infidelity_total = OrderedDict{Int, Dict{GateType, Float64}}()
 
@@ -201,17 +205,21 @@ for k in 1:rand_numbers
         q_pred_infidelity = OrderedDict{GateType, Float64}()
         q_p_meas_infidelity = OrderedDict{GateType, Float64}()
         q_s_meas_infidelity = OrderedDict{GateType, Float64}()
-        pcof0 = zeros(2*n_splines)
-        pcof0[1:n_splines] .= 0.9*max_control_parameter*ones(n_splines)
+        pcof0 = zeros(2*n_splines_init)
+        Random.seed!(70)
+        pcof0 .= (0.5 .- rand(2*n_splines_init)) .* max_control_parameter
+        println(pcof0)
+        # pcof0[1:n_splines_init] .= max_control_parameter*rand(n_splines_init)
         # pcof0[1:n_splines] .= 0.9*max_control_parameter*LinRange(-1, 1, n_splines)
         # pcof0[1:n_splines] .= 0.9*max_control_parameter*rand(n_splines)
-        pcof0[n_splines+1:end] .= 0.1*max_control_parameter*ones(n_splines)
+        
+        # pcof0[n_splines_init+1:end] .= max_control_parameter*rand(n_splines_init)
         # pcof0[n_splines+1:end] .= 0.1*max_control_parameter*LinRange(-1, 1, n_splines) 
         # pcof0[n_splines+1:end] .= 0.1*max_control_parameter*rand(n_splines)
         println("Creating controls")
         for j = 1:N_gates
             # Control for this gate with constant initial pulses
-            qcontrol = FortranBSplineControl(degree_init, n_splines, T_gate)
+            qcontrol = FortranBSplineControl(degree_init, n_splines_init, T_init)
             # pcof0 = 0.5*max_control_parameter*ones(qcontrol.N_coeff)
             # pcof0 = max_control_parameter*rand(qcontrol.N_coeff)
             
@@ -234,6 +242,7 @@ for k in 1:rand_numbers
         end
         control_dict_total[iter_count + 1] = control_dict
         q_pred_infidelity_total[iter_count] = q_pred_infidelity
+        q_pred_infidelity_total_updated[iter_count] = q_pred_infidelity
         q_p_meas_infidelity_total[iter_count] = q_p_meas_infidelity
         q_s_meas_infidelity_total[iter_count] = q_s_meas_infidelity
 
@@ -241,16 +250,17 @@ for k in 1:rand_numbers
         # Run control pulse on physical device (simulated)
         _, event_obs = run_control_physical(phys_q, control_dict_total[data_count][gates[1]]; dt = dt)
         event_obs = abs2.(event_obs)
-
+        display(event_obs)
         # Add measurement noise via SPAM matrix and sampling of quantum state history.
-        # M_spam = column_stochastic(1E-4*rand(2))
+        M_spam = column_stochastic(1E-4*rand(2))
         event_obs = sample_quantum_state_history(100000, phys_q.M_spam, event_obs)
+        # event_obs .= [event_obs[:,i,:] ./ norm.(eachcol(event_obs[:,i,:]))' for i in 1:size(event_obs)[2]]
 
         # Record dataset metadata for index 1
-        nsteps_total[1] = nsteps
+        nsteps_total[1] = nsteps_init
         T_total[1] = dt*nsteps_total[1]
         degree_total[1] = degree_init
-        n_splines_total[1] = n_splines
+        n_splines_total[1] = n_splines_init
         event_obs_total[data_count] = event_obs[:,1:nsteps_total[1]+1, :] 
         pcof_optimal_total[data_count] = get(control_dict_total[data_count][PauliX].coeffs)
         if save_data 
@@ -318,7 +328,11 @@ for k in 1:rand_numbers
                 save_object(joinpath(folder_chain_data, "w2_chain_$(iter_count).jld2"), w2_chain)
             end
             if plot_results 
-                
+                # println(degree_total)
+                # println(n_splines_total)
+                # println(T_total)
+                # println(nsteps_total)
+                # println(pcof_optimal_total)
                 f_vec = zeros(n_pts)
                 wasserstein_vec = zeros(n_pts)
                 for i in 1:n_pts 
@@ -361,10 +375,9 @@ for k in 1:rand_numbers
 
 
         for i in 1:max_characterizations
-            iterations = 10000
-            burnin = 8000
+            iterations = 5000
+            burnin = 3000
             thin = 2
-
             rand_number = rand(1:10000)
             push!(rand_seeds, rand_number)
             global iter_count += 1
@@ -383,6 +396,7 @@ for k in 1:rand_numbers
             
             control_dict = OrderedDict{GateType, QuditControl}()
             q_pred_infidelity = OrderedDict{GateType, Float64}()
+            q_pred_infidelity_updated = OrderedDict{GateType, Float64}()
             q_p_meas_infidelity = OrderedDict{GateType, Float64}()
             q_s_meas_infidelity = OrderedDict{GateType, Float64}()
             # WARNING/NOTE: These reassignments shadow the earlier pcof_optimal_total/event_obs_total variables
@@ -405,32 +419,41 @@ for k in 1:rand_numbers
                     add_control(q, gates[j], qcontrol, coeffs = pcof0, overwrite_control = true)
                     println("New degree: $(get(q.controls[gates[j]].objs).degree).")
                 end
+                if Int(length(get(q.controls[gates[j]].coeffs))/2) != n_splines 
+                    println("Number of splines ($(Int(length(get(q.controls[gates[j]].coeffs))/2))) does not match desired number of splines ($n_splines)")
+                    qcontrol = FortranBSplineControl(degree, n_splines, T)
+                    add_control(q, gates[j], qcontrol, coeffs = (0.5 .- rand(qcontrol.N_coeff)) .* max_control_parameter, overwrite_control = true)
+                    println("New number of splines: ", Int(length(get(q.controls[gates[j]].coeffs)))/2)
+                end
                 println("Gate: ", gates[j])
                 global data_count += 1
                 # optimize controls
                 # only need to re-optimize controls if previous measured infidelity was too large 
                 #(q_p_meas_infidelity_total[iter_count - 1][gates[j]]) > epsilon ||
                 # println("Coeffs before: ", get(q.controls[gates[j]].coeffs))
-                if  (q_p_meas_infidelity_total[iter_count - 1][gates[j]]) > epsilon || (q_pred_infidelity_total[iter_count - 1][gates[j]] > epsilon)
+                if  (q_p_meas_infidelity_total[iter_count - 1][gates[j]]) > epsilon || (q_pred_infidelity_total_updated[iter_count - 1][gates[j]] > epsilon)
                     println("re-optimizing,  measured infidelity: ", q_p_meas_infidelity_total[iter_count-1][gates[j]])
-                    println("re-optimizing,  predicted infidelity: ", q_pred_infidelity_total[iter_count-1][gates[j]])
+                    println("re-optimizing,  predicted infidelity: ", q_pred_infidelity_total_updated[iter_count-1][gates[j]])
                     optimize_control(q, gates[j], options=["max_iter" => 100, "print_level" => 5], dt = dt, iter = iter_count)
                     # println("Coeffs after: ", get(q.controls[gates[j]].coeffs))
                 end
                 # measure infidelity and add values to respective dictionary
                 q_s_inf, q_p_inf, pop_history = measure_infidelity(phys_q, gates[j], q.controls[gates[j]], n_readout_samples, dt = dt)
                 println("Measured infidelity of $(gates[j]) at iteration $iter_count: ", q_p_inf)
-                q_p_meas_infidelity[gates[j]] = q_p_inf 
-                q_s_meas_infidelity[gates[j]] = q_s_inf 
+                q_p_meas_infidelity[gates[j]] = clamp(q_p_inf, 1E-6, 1) 
+                q_s_meas_infidelity[gates[j]] = clamp(q_s_inf, 1E-6, 1) 
                 control_dict[gates[j]] = q.controls[gates[j]]
                 q_pred_infidelity[gates[j]] = abs(get(q.infidelity[gates[j]]))
+                println("Predicted infidelity: ",predicted_infidelity(q, gates[j], q.controls[gates[j]], dt = dt))
+
+                q_pred_infidelity_updated[gates[j]] = predicted_infidelity(q, gates[j], q.controls[gates[j]], dt = dt)
                 # add pcof and data to total amount of data for characterization
                 event_obs_total[j] = pop_history
                 iter, pcof_optimal = last(control_dict[gates[j]].coeffs)
                 pcof_optimal_total[j] = copy(get(q.controls[gates[j]].coeffs))
                 # pcof_optimal_total[j] = pcof_optimal
                 n_splines_total[j] = n_splines
-                T_total[j] = T_gate 
+                T_total[j] = T
                 degree_total[j] = degree 
                 nsteps_total[j] = nsteps
 
@@ -446,6 +469,7 @@ for k in 1:rand_numbers
             
             control_dict_total[iter_count + 1] = control_dict
             q_pred_infidelity_total[iter_count] = q_pred_infidelity
+            q_pred_infidelity_total_updated[iter_count] = q_pred_infidelity_updated
             q_p_meas_infidelity_total[iter_count] = q_p_meas_infidelity
             q_s_meas_infidelity_total[iter_count] = q_s_meas_infidelity
 
@@ -462,22 +486,25 @@ for k in 1:rand_numbers
             
             x_min = minimum(omega_samples)
             x_max = maximum(omega_samples)
-            xs = LinRange(x_min, x_max, 1000)
+            xs = LinRange(x_min, x_max, 1001)
             posterior = gaussian_fit(omega_samples)
             gauss_fit_tol = 1E-1
+            
             if all(values(q_p_meas_infidelity_total[iter_count]) .< 1E-1)
                 prior_downgrade = downgrade_gaussian(omega_samples, 1/downweight_power)
 
                 # set mean to either be mean of prior or midpoint of support.
 
                 # ω0 = [mean(prior_downgrade)]
-                ω0 = [mean([4.0,5.0])]
+                # ω0 = [mean([4.0,5.0])]
+     
+                ω0 = Vector(LinRange(ωmin + 0.1*(ωmax - ωmin), ωmax - 0.1*(ωmax - ωmin), 5))
                 prior_vec[i + 1] = pdf.(truncated_downgrade_gaussian(omega_samples, 1/downweight_power, ωmin, ωmax), xs)
             else
                 println("Measured infidelity of a single gate was larger than $gauss_fit_tol, setting prior to be uniform to explore more parameter space.")
                 prior_downgrade = Uniform(ωmin, ωmax)
                 prior_vec[i + 1] = pdf.(Uniform(ωmin, ωmax), xs)
-                ω0 = [mean([4.0,5.0])]
+                ω0 = Vector(LinRange(ωmin + 0.1*(ωmax - ωmin), ωmax - 0.1*(ωmax - ωmin), 5))
             end
             
             # set ω0 to be sampled from the truncated prior
@@ -506,6 +533,7 @@ for k in 1:rand_numbers
             else
                 println("Re-run characterization")
             end
+            
             # Run W2-chain inference on the new accumulated data from all gates in this iteration
             w2_chain = run_w2_chain_quantum_adaptive(
                 event_obs_total;
@@ -537,8 +565,8 @@ for k in 1:rand_numbers
             ESS = ess(w2_chain.diagnostic_chain)
             push!(rhat_list, R_hat)
             push!(ess_list, ESS)
-            omega_samples = w2_chain.chain_post[:,1]
-            λ_samples = w2_chain.chain_post[:,2]
+            omega_samples = w2_chain.diagnostic_chain[:,3]
+            λ_samples = w2_chain.diagnostic_chain_λ[:,3]
             if save_data
                 save_object(joinpath(folder_chain_data, "w2_chain_$(iter_count).jld2"), w2_chain)
             end
@@ -582,7 +610,7 @@ for k in 1:rand_numbers
 
     if save_data
         
-        @save joinpath(folder_data, "data.jld2") q control_dict_total q_pred_infidelity_total q_p_meas_infidelity_total q_s_meas_infidelity_total prior_vec mean_list std_dev_list rand_seeds ω0_history rhat_list ess_list area_history
+        @save joinpath(folder_data, "data.jld2") q control_dict_total q_pred_infidelity_total q_pred_infidelity_total_updated q_p_meas_infidelity_total q_s_meas_infidelity_total prior_vec mean_list std_dev_list rand_seeds ω0_history rhat_list ess_list area_history
     end
 
     if load_data 
@@ -641,6 +669,7 @@ for k in 1:rand_numbers
                         g == PauliY ? "Y" :
                         g == PauliZ ? "Z" :
                         g == Hadamard ? "H" :
+                        g == Tgate ? "T" :
                         string(g)
 
         jitter = 0.05
@@ -731,6 +760,45 @@ for k in 1:rand_numbers
         hline!([epsilon], label = "Tolerance", color = :black, linestyle = :dash, alpha = 0.8)
         savefig(joinpath(folder_infidelity, "predicted_infidelity.png"))
 
+        # do the same for the q_pred_infidelity_updated dictionary
+        for i in 1:length(inds)
+            gates = collect(keys(q_pred_infidelity_total_updated[inds[i]]))
+            x = (1:N_gates) .+ (i - (length(inds)+1)/2) * jitter
+            pred_vals = collect(values(q_pred_infidelity_total_updated[inds[i]]))
+            xtick_labels = gate_to_str.(gates)
+            p_str = "p"*int_to_subscript(inds[i])
+            if i == 1
+                pred_infidelity_scatter = scatter(x, pred_vals, 
+                    yscale = :log10,
+                    xlabel = "Gate",
+                    ylabel = "Predicted Infidelity",
+                    title = "Predicted Infidelity for gate set across re-characterization iterations",
+                    titlefontsize = 8,
+                    xticks = (1:N_gates, xtick_labels),
+                    yticks = 10.0 .^ (-7:0),
+                    dpi = 300,
+                    marker = :circle,
+                    markersize = 6,
+                    alpha = 0.9,
+                    color = colors[i + 1],
+                    label = p_str,
+                    legend = :outertop,
+                    legend_background_color = :transparent,
+                    legendfontsize = 8,
+                    legendcolumns = 4,
+                )
+            else
+                scatter!(x, pred_vals, 
+                    marker = :circle,
+                    markersize = 6,
+                    alpha = 0.9,
+                    color = colors[i + 1],
+                    label = p_str,
+                )
+            end
+        end
+        hline!([epsilon], label = "Tolerance", color = :black, linestyle = :dash, alpha = 0.8)
+        savefig(joinpath(folder_infidelity, "predicted_infidelity_updated.png"))
         # plot priors if using Kernel density estimation, not using this!
         # prior_plot = plot(xs, prior_vec_reduced[1], label = "Prior 0", dpi = 250, title = "Kernel: $dist_func, bandwidth = $bandwidth, downgrade power = $downweight_power", xlabel = "ω", ylabel = "Density", titlefontsize = 8)
         # for i in 2:length(prior_vec_reduced)

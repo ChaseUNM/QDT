@@ -5,7 +5,7 @@ using LinearAlgebra, QuantumGateDesign, ValueHistories
 # GATE TYPES
 ########################################################################
 
-@enum GateType PauliX PauliY PauliZ Hadamard CNOT
+@enum GateType PauliX PauliY PauliZ Hadamard Tgate CNOT
 
 function unitary(gate::GateType)
     # Returns the unitary associated with the gate
@@ -18,6 +18,8 @@ function unitary(gate::GateType)
         return PauliZ_gate()
     elseif gate == Hadamard
         return Hadamard_gate()
+    elseif gate == Tgate
+        return T_gate()
     elseif gate == CNOT
         return CNOT_gate()
     else
@@ -311,14 +313,20 @@ function run_control(q::DigitalQudit, q_control::QuditControl; dt=0.2)
     _, control_coeffs = last(q_control.coeffs)
     
     # Create a SchrodingerProb for each of the qudits param samples
-    probs = get_schrodinger_problems(q, T_gate, dt)  
+    probs = get_schrodinger_problems(q, T_gate, dt)
+    
     n_probs = length(probs)  
-    # println(get(q.omega))
+ 
     # println("Omega rotation: ",q.omega_rot)
     # Run simulation for each parameter setting    
     Psi = zeros(Complex, n_probs, q.Ne + q.Ng, q.Ne)
     for j = 1:n_probs
-        state_history = eval_forward(probs[j], control_obj, control_coeffs)
+        # println("our schro prob $j: ")
+        # println(probs[j])
+        state_history = eval_forward(probs[j], control_obj, control_coeffs, order = 4)
+        # println("control_coeffs: ", control_coeffs)
+        # println("our_state_history $j: ")
+        # display(state_history)
         Psi[j,:,:] = state_history[:,end,:]
     end
 
@@ -350,10 +358,44 @@ function optimize_control(
 
     # Run the optimizer
     opt_ret_multiple = optimize_prob(
-                            probs, control_obj, control_coeffs, U_target, pcof_lbound=-max_amplitude, pcof_ubound=max_amplitude, cost_type=:Infidelity, ipopt_options=options
+                            probs, control_obj, control_coeffs, U_target, pcof_lbound=-max_amplitude, pcof_ubound=max_amplitude, cost_type=:Infidelity, ipopt_options=options, 
+                            ridge_penalty_strength = 1e-2, order = 4
                         )
 
     # Save results     
     push!(q.infidelity[gate], iter, opt_ret_multiple.obj_val)
     control_coeffs .= opt_ret_multiple.x
+end
+
+function predicted_infidelity(
+        q::DigitalQudit, 
+        gate::GateType,
+        q_control::QuditControl; 
+        dt = 0.2, 
+        iter::Int = -1)
+    
+    N = q.Ne + q.Ng 
+    U_target = unitary(gate, N)
+    psi_final = run_control(q, q_control, dt = dt)
+    state_infidelity = 0
+
+    pcof = get(q_control.coeffs)
+    ridge_penalty = 0
+    n_probs = length(get(q.omega))
+    state_infidelity_vec = zeros(n_probs)
+    for i in 1:n_probs 
+        # state_infidelity += infidelity(psi_final[i,:,:], U_target, size(U_target, 2))
+        
+        # psi_final_normal = psi_final[i,:,:]./norm.(eachcol(psi_final[i,:,:]))
+        # println("psi_final 2")
+        # display(psi_final_normal)
+        # println("norm prob $i: ", norm.(eachcol(psi_final[i,:,:])))
+        state_infidelity += 1 - (1/q.Ne^2)*abs(dot(psi_final[i,:,:], U_target))^2
+        state_infidelity_vec[i] = 1 - (1/q.Ne^2)*abs(dot(psi_final[i,:,:], U_target))^2
+        ridge_penalty += dot(pcof, pcof)*1e-2/length(pcof)
+    end
+    # println(state_infidelity/n_probs)
+    # println("n probs: ", n_probs)
+    # println("state infidelities: ", state_infidelity_vec)
+    return (state_infidelity + ridge_penalty)/n_probs
 end

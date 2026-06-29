@@ -59,11 +59,20 @@ function clamp_diag(A::Matrix{<:Real}; cutoff::Real = 1E-10)
     return A 
 end
 
+
 function clamp_eigs(A::Matrix{<:Real}; cutoff::Real = 1E-10)
     F = eigen(A)
     λ = F.values 
     V = F.vectors 
     λ .= max.(λ, cutoff)
+    return V * diagm(λ) * V'
+end
+
+function clamp_eigs(A::Matrix{<:Real}; min_eig::Real = 1E-10, max_eig::Real=1.0)
+    F = eigen(A)
+    λ = F.values 
+    V = F.vectors 
+    λ .= clamp.(λ, min_eig, max_eig)
     return V * diagm(λ) * V'
 end
 

@@ -52,7 +52,7 @@ n_splines = 10
 T = 50
 nsteps = 400
 dt = T/nsteps
-carrier_freqs = [0, ξ12, 2*ξ12]
+carrier_freqs = [0, 0*ξ12, 0*ξ12]
 n_freq = length(carrier_freqs)
 
 #################################################################
@@ -86,13 +86,15 @@ q2_control = CarrierControl(
                 (ω2-q2.omega_rot) .- carrier_freqs
              )
 
-q1_control = QuditControl(q1_control)
-q2_control = QuditControl(q2_control)
-push!(q1_control.coeffs, 0, rand(2*n_splines*n_freq))
-push!(q2_control.coeffs, 0, rand(2*n_splines*n_freq))
+q1_control_QDT = QuditControl(q1_control)
+q2_control_QDT = QuditControl(q2_control)
+# q1_control_QDT = QuditControl(base_control)
+# q2_control_QDT = QuditControl(base_control)
+push!(q1_control_QDT.coeffs, 0, rand(2*n_splines*n_freq))
+push!(q2_control_QDT.coeffs, 0, rand(2*n_splines*n_freq))
 
 
-add_control(pair, CNOT, q1_control, q2_control)
+add_control(pair, CNOT, q1_control_QDT, q2_control_QDT)
 
 # Create a PhysicalQudit instance used for simulating real device outcomes
 Random.seed!(60)
@@ -122,7 +124,6 @@ Psi= run_control(pair,
                   dt=dt)
 
 # Psi = Psi[1,:,:]
-
 Psi_physical, history_physical = run_control_physical(physical_pair, 
                   pair.controls[CNOT][1], 
                   pair.controls[CNOT][2], 
@@ -133,9 +134,8 @@ p_inf, s_inf, hist = measure_infidelity(physical_pair,
                 CNOT, pair.controls[CNOT][1], 
                 pair.controls[CNOT][2], 100000, 
                 add_SPAM = true, dt = dt)
-
-M_spam = 
-
+ 
+ 
 pcof_optimal_1 = get(pair.controls[CNOT][1].coeffs)
 pcof_optimal_2 = get(pair.controls[CNOT][2].coeffs)
 
@@ -148,12 +148,29 @@ nsteps_forward = Int(T/dt)
 
 
 xi_perturbation = 0.0
-omega_perturbation = 0.0
+omega_1_perturbation = 0.0
+omega_2_perturbation = 0.0
 
-event_obs = forward_event_quantum_multi([Ne, Ne], [Ng, Ng], [ω1 + omega_perturbation, ω2], [ωr, ωr], [ξ1, ξ2], J12, ξ12 + xi_perturbation, degree, n_splines, Matrix(1.0*I, 4, 4), T, nsteps, [pcof_optimal_1, pcof_optimal_2], carrier_freqs)
+# change it so initial controls are quadratic splines with carrier frequencies
+# after obtaining data then use optimal control to opimize for data points 
+max_control_parameter = 0.1
+pcof_optimal_1 = (0.5 .- rand(q1_control.N_coeff)) .* max_control_parameter
+pcof_optimal_2 = (0.5 .- rand(q2_control.N_coeff)) .* max_control_parameter
+
+pcof_optimal_1 = rand() * max_control_parameter .* ones(q1_control.N_coeff) 
+pcof_optimal_2 = rand() * max_control_parameter .* ones(q2_control.N_coeff)
+
+
+
+event_obs, _, event_state = forward_event_quantum_multi([Ne, Ne], [Ng, Ng], [ω1, ω2], [ωr, ωr], [ξ1, ξ2], J12, ξ12, degree, n_splines, Matrix(1.0*I, 4, 4), T, nsteps, [pcof_optimal_1, pcof_optimal_2], carrier_freqs)
+event_obs_2, _, event_state_2 = forward_event_quantum_multi([Ne, Ne], [Ng, Ng], [ω1 + omega_1_perturbation, ω2 + omega_2_perturbation], [ωr, ωr], [ξ1, ξ2], J12, ξ12 + xi_perturbation, degree, n_splines, Matrix(1.0*I, 4, 4), T, nsteps, [pcof_optimal_1, pcof_optimal_2], carrier_freqs)
 Random.seed!(60)
 M_spam = physical_pair.M_spam
 event_obs_SPAM = sample_quantum_state_history(100000, M_spam, event_obs)
+event_obs_SPAM_2 = sample_quantum_state_history(100000, M_spam, event_obs_2)
+
+println("Difference in last time step of event_obs_SPAM: ", norm(event_obs[:,end,:] - event_obs_2[:,end,:]))
+println("Difference in last time step of event_state: ", norm(event_state[:,end,:] - event_state_2[:,end,:]))
 
 U_target = zeros(4,4)
 U_target[1,1] = 1.0
@@ -165,8 +182,208 @@ U_target[4,3] = 1.0
 p_inf = infidelity_population(event_obs_SPAM[:,end,:], abs2.(U_target))
 println("Population Infidelity: ", p_inf)
 
+
+
+experiment_name = "results/characterization_2qubits"
+if save_data 
+    folder, tag = make_unique_folder(experiment_name)
+    pcof_dir = joinpath(folder, "pcof_optimal")
+    mkpath(pcof_dir)
+    @save joinpath(pcof_dir, "initial_pcof.jld2") pcof_optimal_1 pcof_optimal_2
+    data_folder = joinpath(folder, "data")
+    mkpath(data_folder)
+    # event_obs_folder = joinpath(folder, "event_obs")
+    # mkpath(event_obs_folder)
+    folder_histogram = joinpath(folder, "histogram")
+    mkpath(folder_histogram)
+    folder_wasserstein = joinpath(folder, "wasserstein")
+    mkpath(folder_wasserstein)
+end
+
+iterations = 10000
+burnin = 5000
+thin = 10
+
 run_characterization = true
 calculate_landscape = true
+
+function characterization_2qubits(n_rounds)
+    # Replace the repeated blocks with a configurable iterative loop
+    iterations = 10000
+    burnin = 8000
+    thin = 10
+
+    run_characterization = true
+    calculate_landscape = true
+
+    # number of characterization rounds to run (was duplicated twice in original selection)
+
+    if run_characterization
+        # initial settings (used for round 1)
+        ω_init_default = [4.4 4.7 0.2]
+        ωr_vec = [ωr, ωr]
+        degree_cfg = [2]
+        n_splines_cfg = [10]
+        U0 = Matrix(1.0*I, 4, 4)
+        T_cfg = [50]
+        nsteps_cfg = [400]
+        pcof_optimal_total = [[pcof_optimal_1, pcof_optimal_2]]
+        carrier_freqs = [0, 0*ξ12, 0*2*ξ12]
+        total_data_count = 1
+        ωmin = [4.3, 4.4, 0.0]
+        ωmax = [5.7, 4.8, 0.3]
+        event_obs_total = Vector{Array{Float64}}(undef, 1)
+        event_obs_total[1] = event_obs_SPAM
+
+        # downweight factor used when forming the downgraded covariance/prior
+        downweight_power = 0.9
+
+        # holder for last chain
+        w2_chain_multi = nothing
+
+        for round in 1:n_rounds
+            println("Characterization round $round / $n_rounds")
+
+            # choose initial guess / prior depending on round
+            if round == 1
+                θ_init = ω_init_default
+                # run without providing an explicit prior
+                w2_chain_multi = run_w2_chain_quantum_multi_adaptive(
+                    event_obs_total;
+                    θ = θ_init,
+                    ωr = ωr_vec,
+                    degree = degree_cfg,
+                    n_splines = n_splines_cfg,
+                    U0 = U0,
+                    T = T_cfg,
+                    λ_log0 = log(10.0),
+                    nsteps = nsteps_cfg,
+                    pcof_optimal_total = pcof_optimal_total,
+                    carrier_freqs = carrier_freqs,
+                    total_data_count = total_data_count,
+                    ωmin = ωmin,
+                    ωmax = ωmax,
+                    iterations = iterations,
+                    scale_factor = nsteps_cfg[1] + 1,
+                    burnin = burnin,
+                    thin = thin
+                )
+            else
+                # form prior from previous diagnostic chain (downgraded MVN)
+                covariance_mat = cov(w2_chain_multi.diagnostic_chain[:,1,:])
+                covariance_downgrade = (1 / downweight_power) * covariance_mat
+                mean_data = mean.(eachcol(w2_chain_multi.diagnostic_chain[:,1,:]))
+                downgrade_prior = MvNormal(mean_data, covariance_downgrade)
+
+                # use mean_data as starting theta
+                θ_init = reshape(mean_data, 1, length(mean_data))
+
+                # run with prior
+                w2_chain_multi = run_w2_chain_quantum_multi_adaptive(
+                    event_obs_total;
+                    λ_log0 = log(10.0),
+                    prior = downgrade_prior,
+                    θ = θ_init,
+                    ωr = ωr_vec,
+                    degree = degree_cfg,
+                    n_splines = n_splines_cfg,
+                    U0 = U0,
+                    T = T_cfg,
+                    nsteps = nsteps_cfg,
+                    pcof_optimal_total = pcof_optimal_total,
+                    carrier_freqs = carrier_freqs,
+                    total_data_count = total_data_count,
+                    ωmin = ωmin,
+                    ωmax = ωmax,
+                    iterations = iterations,
+                    scale_factor = nsteps_cfg[1] + 1,
+                    burnin = burnin,
+                    thin = thin
+                )
+            end
+            # save per-round data if requested
+            
+
+            # form downgraded MVN prior from diagnostic chain for next round (or final use)
+            covariance_mat = cov(w2_chain_multi.diagnostic_chain[:,1,:])
+            covariance_downgrade = (1 / downweight_power) * covariance_mat
+            mean_data = mean.(eachcol(w2_chain_multi.diagnostic_chain[:,1,:]))
+            downgrade_prior = MvNormal(mean_data, covariance_downgrade)
+
+            # add samples to qudit objects and re-optimize controls (risk-neutral) using the inferred params
+            add_param_samples(q1, w2_chain_multi.diagnostic_chain[:,1,1], zeros(length(w2_chain_multi.diagnostic_chain[:,1,1])), iter = round - 1)
+            add_param_samples(q2, w2_chain_multi.diagnostic_chain[:,1,2], zeros(length(w2_chain_multi.diagnostic_chain[:,1,2])), iter = round - 1)
+            add_param_samples(pair, zeros(length(w2_chain_multi.diagnostic_chain[:,1,3])), w2_chain_multi.diagnostic_chain[:,1,3], iter = round - 1)
+            if save_data
+                @save joinpath(data_folder, "w2_chain_round$(round).jld2") w2_chain_multi mean_data covariance_mat
+            end
+            # optional expensive landscape calculation (unchanged)
+            if calculate_landscape
+                ω1_vec = LinRange(4.0, 5.0, 51)
+                ω2_vec = LinRange(4.0, 5.0, 51)
+                ξ12_vec = LinRange(0.0, 0.2, 51)
+                loss = Array{Float64}(undef, length(ω1_vec), length(ω2_vec), length(ξ12_vec))
+                global count = 0
+                for (i, ω1) in enumerate(ω1_vec)
+                    for (j, ω2) in enumerate(ω2_vec)
+                        for (k, ξ12_val) in enumerate(ξ12_vec)
+                            ω_pt = [ω1, ω2, ξ12_val]
+                            loss[i, j, k] = true_posterior_multi(
+                                event_obs_total,
+                                [
+                                    Uniform(ωmin[1], ωmax[1]),
+                                    Uniform(ωmin[2], ωmax[2]),
+                                    Uniform(ωmin[3], ωmax[3])
+                                ],
+                                ω_pt,
+                                ωr_vec,
+                                degree_cfg,
+                                n_splines_cfg,
+                                U0,
+                                T_cfg,
+                                nsteps_cfg,
+                                pcof_optimal_total,
+                                total_data_count
+                            )[3]
+                            global count += 1
+                            if count % 1000 == 0
+                                println("Calculated loss for $count points")
+                            end
+                        end
+                    end
+                end
+                if save_data
+                    @save joinpath(data_folder, "loss_data_round$(round).jld2") loss ω1_vec ω2_vec ξ12_vec
+                end
+            end
+
+            
+            if n_rounds > 1 
+                optimize_control(pair, CNOT, dt = dt_opt,
+                    options = ["max_iter" => n_iters_opt, "print_level" => 5, "limited_memory_max_history" => 250],
+                    iter = round - 1)
+            end
+
+            # update pcof_optimal for possible reuse in later inference rounds
+            pcof_optimal_1 = get(pair.controls[CNOT][1].coeffs)
+            pcof_optimal_2 = get(pair.controls[CNOT][2].coeffs)
+
+  
+
+        end # for round
+
+        # expose final chain and params
+        param_chain = w2_chain_multi.diagnostic_chain
+    else
+        println("Skipping characterization (run_characterization = false).")
+    end
+    return w2_chain_multi
+end
+
+w2_chain_multi = characterization_2qubits(4)
+
+
+#=
 if run_characterization
 
     ω_init = [4.4 4.7 0.2]
@@ -183,7 +400,7 @@ if run_characterization
     ωmax = [5.0,5.0,0.2]
     event_obs_total = Vector{Array{Float64}}(undef, 1)
     event_obs_total[1] = event_obs_SPAM
-    w2_chain_multi = run_w2_chain_quantum_multi(
+    w2_chain_multi = run_w2_chain_quantum_multi_adaptive(
         event_obs_total;
         θ = ω_init, 
         ωr = ωr_vec,
@@ -191,16 +408,17 @@ if run_characterization
         n_splines = n_splines,
         U0 = U0,
         T = T,
+        λ_log0 = log(10.0),
         nsteps = nsteps,
         pcof_optimal_total = pcof_optimal_total,
         carrier_freqs = carrier_freqs,
         total_data_count = total_data_count,
         ωmin = ωmin, 
         ωmax = ωmax, 
-        iterations = 40000,
+        iterations = iterations,
         scale_factor = nsteps[1] + 1,
-        burnin = 10000,
-        thin = 2
+        burnin = burnin,
+        thin = thin
     )
 
     # now calculate the wasserstein distance from 100 equispaced points in the parameter space to the true parameters, and see how it changes as we add more data and re-run inference.
@@ -252,15 +470,85 @@ if run_characterization
             ω_pt = [all_pts[i]...]
             loss_vec[i] = true_posterior_multi(event_obs_total, [Uniform(ωmin[1], ωmax[1]), Uniform(ωmin[2], ωmax[2]), Uniform(ωmin[3], ωmax[3])], ω_pt, ωr_vec, degree, n_splines, U0, T, nsteps, pcof_optimal_total, total_data_count)[3]
         end
-
         # now plot three slices of the loss landscape, ω1 and \omega2 at the true ξ12 value, ξ12 and ω1 at the true ω2 value, and ξ12 and ω2 at the true ω1 value
 
         # loss_plot_ω1_ω2 = heatmap(ω1_vec, ω2_vec, log10.(loss[:,:,26]'), xlabel = "ω1", ylabel = "ω2", title = "Loss landscape: ω1 vs ω2 at true ξ12")
         # loss_plot_ω1_ξ12 = heatmap(ω1_vec, ξ12_vec, log10.(loss[:,41,:]'), xlabel = "ω1", ylabel = "ξ12", title = "Loss landscape: ω1 vs ξ12 at true ω2")
         # loss_plot_ω2_ξ12 = surface(ω2_vec, ξ12_vec, log10.(loss[26,:,:]'), xlabel = "ω2", ylabel = "ξ12", title = "Loss landscape: ω2 vs ξ12 at true ω1")
     end
-
+    if save_data 
+        @save joinpath(data_folder, "data.jld2") pair physical_pair w2_chain_multi event_obs_total pcof_optimal_total
+        @save joinpath(folder_wasserstein, "loss_data.jld2") loss ω1_vec ω2_vec ξ12_vec
+    end
 end
+
+param_chain_1 = w2_chain_multi.diagnostic_chain
+
+
+covariance_mat = cov(w2_chain_multi.diagnostic_chain[:,1,:])
+
+# downgrade multivariate normal by multiplying covariance by (1/p)
+downweight_power = 0.9
+covariance_downgrade = (1/downweight_power)*covariance_mat 
+
+mean_data = mean.(eachcol(w2_chain_multi.diagnostic_chain[:,1,:]))
+
+downgrade_prior = MVNormal(mean_data, covariance_downgrade)
+
+# the parameters have been obtained, now to run risk-neutral control with the parameters 
+add_param_samples(q1, w2_chain_multi.diagnostic_chain[:,1,1], zeros(length(w2_chain_multi.diagnostic_chain[:,1,1])))
+add_param_samples(q2, w2_chain_multi.diagnostic_chain[:,1,2], zeros(length(w2_chain_multi.diagnostic_chain[:,1,2])))
+add_param_samples(pair, zeros(length(w2_chain_multi.diagnostic_chain[:,1,3])), w2_chain_multi.diagnostic_chain[:,1,3]) 
+
+optimize_control(pair, CNOT, dt=dt_opt, 
+                options=["max_iter" => n_iters_opt, "print_level" => 5, "limited_memory_max_history" => 250])
+
+pcof_optimal_1 = get(pair.controls[CNOT][1].coeffs)
+pcof_optimal_2 = get(pair.controls[CNOT][2].coeffs)
+if run_characterization
+
+    ω_init = mean_data
+    ωr_vec = [ωr,  ωr]
+    degree = [2]
+    n_splines = [10]
+    U0 = Matrix(1.0*I, 4, 4)
+    T = [50]
+    nsteps = [400]
+    pcof_optimal_total = [[pcof_optimal_1, pcof_optimal_2]]
+    carrier_freqs = [0, ξ12, 2*ξ12]
+    total_data_count = 1
+    ωmin = [4.0,4.0,0.0]
+    ωmax = [5.0,5.0,0.2]
+    event_obs_total = Vector{Array{Float64}}(undef, 1)
+    event_obs_total[1] = event_obs_SPAM
+    w2_chain_multi = run_w2_chain_quantum_multi(
+        event_obs_total;
+        λ_log0 = log(10.0),
+        prior = downgrade_prior,
+        θ = ω_init, 
+        ωr = ωr_vec,
+        degree = degree,
+        n_splines = n_splines,
+        U0 = U0,
+        T = T,
+        nsteps = nsteps,
+        pcof_optimal_total = pcof_optimal_total,
+        carrier_freqs = carrier_freqs,
+        total_data_count = total_data_count,
+        ωmin = ωmin, 
+        ωmax = ωmax, 
+        iterations = iterations,
+        scale_factor = nsteps[1] + 1,
+        burnin = burnin,
+        thin = thin
+    )
+end
+
+param_chain_2 = w2_chain_multi.diagnostic_chain
+
+=#
+
+
 # The following preallocations assume we will fill up to max_data entries.
 # Improvement: consider using Vector{Union{Nothing, T}}(...) or push! semantics instead of large undef arrays.
 
