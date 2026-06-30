@@ -80,15 +80,10 @@ Arguments
     Psi = run_control(self.device, controller, control_coeffs; kwargs...)
     Psi = Psi[1,:,:,:]
 
-    # Normalize states
-    N = self.device.N
-    mat_Psi = reshape(Psi, N, :)
-    mat_Psi ./= transpose(norm.(eachcol(mat_Psi)))
-
     # Apply SPAM error?
     meas_populations = abs2.(Psi)
     if add_SPAM
-        tmp = reshape(meas_populations, N, :)
+        tmp = reshape(meas_populations, self.device.N, :)
         tmp .= self.M_spam * tmp
     end
 

@@ -285,10 +285,10 @@ function parse_paired_controls(
         zero_controller = GRAPEControl(1, controller.tf);
         if which_qubit == 1
             controller_ = Vector{AbstractControl}([controller, zero_controller])
-            control_coeffs_ = [0.0; 0.0; control_coeffs];
+            control_coeffs_ = [control_coeffs; 0.0; 0.0];
         else
             controller_ = Vector{AbstractControl}([zero_controller, controller])
-            control_coeffs_ = [control_coeffs; 0.0; 0.0];
+            control_coeffs_ = [0.0; 0.0; control_coeffs];
         end
         return controller_, control_coeffs_
 

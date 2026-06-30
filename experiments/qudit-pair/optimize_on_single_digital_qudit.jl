@@ -45,7 +45,7 @@ ipopt_options = ["max_iter" => 50,
                  "limited_memory_max_history" => 250
                 ]
 # Number of samples to use for optimization
-n_samples_opt_1q = 5
+n_samples_opt_1q = 10
 
 # Gate set
 one_qubit_gates  = [PauliX, PauliZ]
@@ -124,6 +124,7 @@ const_control_char_event = run_w2_chain(
                                 rng=mcmc_rng
                             )
 
+
 #====================================================================================
     OPTIMIZE SINGLE-QUBIT GATES
 ====================================================================================#
@@ -138,7 +139,6 @@ obs_events_1q_gate  = Array{ObservationEvent,2}(undef, n_qubits, N_1q_gates)
 
 # Initial, random control coefficients ("betas") for each gate
 control_coeffs = (0.5 .- rand(N_coeff_1q_gate,n_qubits,N_1q_gates))*max_control_amplitude
-
 
 
 @printf("SINGLE-QUDIT GATE OPTIMIZATION\n")
@@ -187,12 +187,15 @@ end
 
 
 #====================================================================================
-    TEST CONTROL WITH DIFFERENT ξ12
+    TEST CONTROLS WITH DIFFERENT ξ12
+
+    Specifically for gates A ⊗ B where one of A or B is the identity
 ====================================================================================#
 
-n_steps = 25
-ξ12_range = LinRange(0, ξmax, 100)
-infidelity_vs_ξ12 = zeros(n_qubits,N_1q_gates,n_steps)
+n_steps = 100
+ξ12_range = LinRange(0, ξmax, n_steps)
+single_gate_state_infidelity = zeros(n_qubits,N_1q_gates,n_steps)
+single_gate_pop_infidelity   = zeros(n_qubits,N_1q_gates,n_steps)
 
 # Loop over qubits
 for q = 1:n_qubits
@@ -209,17 +212,158 @@ for q = 1:n_qubits
             phys_device.device.xi = ξ12_range[k]
 
             # Run the qubit q's control for gate j for this setting of ξ12
-            obs = run_control(
-                        phys_device, 
+            Ψ = run_control(
+                        phys_device.device, 
                         controller_1q_gate, 
                         control_coeffs[:,q,j], 
-                        n_readout_samples; 
-                        target_gate=one_qubit_gates[j],
-                        which_qubit=q,
-                        add_SPAM=false
-                    )
-            infidelity_vs_ξ12[q,j,k] = obs.measured_infidelity
-
+                        which_qubit=q
+                )[1,:,end,:]
+            Ψ ./= norm.(eachcol(Ψ))
+            U = unitary(phys_device.device, one_qubit_gates[j], which_qubit=q)
+            single_gate_state_infidelity[q,j,k] = infidelity(U,Ψ,4)
+            single_gate_pop_infidelity[q,j,k]   = infidelity_population(abs2.(Ψ).^2, abs2.(U))
         end
     end
 end
+
+
+#====================================================================================
+    DEV
+====================================================================================#
+
+# Select a qubit and a gate
+q = 1
+g = 1
+
+# Run a control on the physical device without ξ12 = 0.0 and no SPAM
+phys_device.device.xi = 0.0
+obs_2q = run_control(   phys_device.device, 
+                        controller_1q_gate, 
+                        control_coeffs[:,q,g],
+                        which_qubit=q
+                    )
+Ψ_2q = obs_2q[1,:,end,:]
+
+# Run the same control on a DigitalQudit
+set_parameters(digital_q, q==1 ? ω1 : ω2, 0.0)
+obs_1q = run_control(digital_q, 
+                    controller_1q_gate, 
+                    control_coeffs[:,q,g] )
+Ψ_1q = obs_1q[1,:,end,:]
+
+# Measuring infidelity
+Id = I[1:2,1:2] 
+inf_1q = infidelity(Ψ_1q, unitary(one_qubit_gates[q]), 2)
+inf_2q = infidelity(Ψ_2q, unitary(phys_device.device, one_qubit_gates[q], which_qubit=q), 4)
+state_dist = norm(Ψ_2q - kron(Ψ_1q,Id))
+pop_dist = norm(abs.(Ψ_2q) - kron(abs.(Ψ_1q),Id))
+
+# Printing the stats
+@printf("|Ψ₁  - U₁ | = %.2e\n", inf_1q)
+@printf("|Ψ₁₂ - U₁₂| = %.2e\n", inf_2q)
+@printf("|Ψ₁  - Ψ₁₂| = %.2e\n", state_dist)
+@printf("|abs.(Ψ₁₂) - abs.(Ψ₁₂)| = %.2e\n", pop_dist)
+
+
+
+#====================================================================================
+    TEST CONTROL WITH DIFFERENT ξ12
+    
+    This time, perform gates X₁ ⊗ X₂, X₁ ⊗ Z₂, etc 
+====================================================================================#
+
+n_steps = 100
+ξ12_range = LinRange(0, ξmax, n_steps)
+paired_gate_state_infidelity = zeros(N_1q_gates, N_1q_gates, n_steps)
+paired_gate_pop_infidelity   = zeros(N_1q_gates, N_1q_gates, n_steps)
+
+# Loop over pairs of gates
+for j1 = 1:N_1q_gates
+    for j2 = 1:N_1q_gates
+        @printf("  Gate %s₁ ⊗ %s₂ ...\n", string(one_qubit_gates[j1]), 
+                                            string(one_qubit_gates[j2]))
+
+        # Loop over ξ12 settings
+        for k = 1:n_steps
+
+            # Set ξ12 for the physical qubit
+            phys_device.device.xi = ξ12_range[k]
+
+            # Run the qubit q's control for gate j for this setting of ξ12
+            Ψ = run_control(phys_device.device, 
+                        AbstractControl[controller_1q_gate, controller_1q_gate], 
+                        [control_coeffs[:,1,j1]; control_coeffs[:,2,j2]], 
+                    )[1,:,end,:]
+            Ψ ./= norm.(eachcol(Ψ))'
+            U₁ = unitary(one_qubit_gates[j1])
+            U₂ = unitary(one_qubit_gates[j2])
+            U₁₂ = kron(U₁,U₂)
+            paired_gate_state_infidelity[j1,j2,k] = infidelity(Ψ, U₁₂, 4)
+            paired_gate_pop_infidelity[j1,j2,k] = infidelity_population(abs2.(Ψ), abs2.(U₁₂))
+        end
+    end
+end
+
+
+
+#====================================================================================
+    Plot some of the errors vs. ξ12 
+
+====================================================================================#
+
+state_infidelity_data = [
+    single_gate_state_infidelity[1,1,:],
+    single_gate_state_infidelity[2,1,:],
+    single_gate_state_infidelity[2,2,:],
+    paired_gate_state_infidelity[1,1,:],
+    paired_gate_state_infidelity[1,2,:]
+]
+
+pop_infidelity_data = [
+    single_gate_pop_infidelity[1,1,:],
+    single_gate_pop_infidelity[2,1,:],
+    single_gate_pop_infidelity[2,2,:],
+    paired_gate_pop_infidelity[1,1,:],
+    paired_gate_pop_infidelity[1,2,:]
+]
+
+plot_data = [state_infidelity_data, pop_infidelity_data]
+
+labels = [
+    L"$X_1$",
+    L"$X_2$",
+    L"$Z_2$",
+    L"$X_1 X_1$",
+    L"$X_1 Z_2$"
+]
+
+subplot_titles = [
+    L"State Infidelity $\mathcal{F}(\Psi,\hat{U})$", 
+    L"Population Infidelity $\mathcal{F}(\vert\Psi\vert^2,\vert\hat{U}\vert^2)$"
+]
+
+subplots = Vector{Any}(undef, 2)
+for i = 1:2
+    subplots[i] = plot(
+        xlabel=L"Cross-Kerr $ξ_{12}$",
+        xguidefontsize=18,
+        title=subplot_titles[i],
+        titlefontsize=20,
+        tickfontsize=12,
+        left_margin = 2mm,
+        bottom_margin = 5mm,
+        legendfontsize=15,
+    )
+    for j = eachindex(labels)
+        plot!(ξ12_range, plot_data[i][j], linewidth=2, label=labels[j])
+    end
+end
+
+
+f = plot(
+    subplots[1], subplots[2], layout=(1,2),
+    plot_title="Gate Infidelity vs. Cross-Kerr Strength",
+    plot_titlefontsize=25, dpi=512, size=(1200,600), plot_titlevspan=0.1
+)
+
+savefig(f, "figures/gate_infidelity_vs_cross_kerr.svg")

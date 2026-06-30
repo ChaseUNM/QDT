@@ -38,7 +38,7 @@ Arguments
     dt::Float64             Integration step size    
 
 """
-function run_control(device::DigitalDevice, 
+@views function run_control(device::DigitalDevice, 
                      controller::Union{AbstractControl,Vector{AbstractControl}},
                      control_coeffs::Vector{Float64}; 
                      kwargs...)
@@ -49,7 +49,7 @@ end
 """
 Default `run_control()` implementation for `DigitalDevice` instances.
 """
-function run_control_base(device::DigitalDevice, 
+@views function run_control_base(device::DigitalDevice, 
                      controller::Union{AbstractControl,Vector{AbstractControl}},
                      control_coeffs::Vector{Float64}; 
                      dt::Float64=0.2)
@@ -68,6 +68,9 @@ function run_control_base(device::DigitalDevice,
                                                        controller, 
                                                        control_coeffs)
         Psi[j,:,:,:] .= state_history
+        # Normalize states
+        mat_Psi = reshape(view(Psi,j,:,:,:), device.N, :)
+        mat_Psi ./= transpose(norm.(eachcol(mat_Psi)))
     end
 
     return Psi
@@ -117,7 +120,7 @@ end
 """
 Default `optimize_control()` implementation for `DigitalDevice` instances.
 """
-function optimize_control_base(
+@views function optimize_control_base(
         q::DigitalDevice, 
         controller::Union{AbstractControl,Vector{AbstractControl}},
         control_β0::Vector{Float64},
