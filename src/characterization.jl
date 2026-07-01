@@ -62,6 +62,7 @@ function run_w2_chain(
     thin::Int=2,
     t0_adapt::Int=100,
     target_accept::Real=0.44,
+    target_accept_logλ::Real=0.44,
     σ_min::Float64=1e-10,
     σ_max::Float64=100.,
     logλ_min::Float64=1e-3,
@@ -181,7 +182,7 @@ function run_w2_chain(
             μ_logλ += γ(iter) * d_logλ
             Σ_logλ += γ(iter)*(d_logλ^2 - Σ_logλ)
             Σ_logλ = clamp(Σ_logλ, 1e-16, 1e2)
-            η_logλ += γ(iter) * (αλ - target_accept)
+            η_logλ += γ(iter) * (αλ - target_accept_logλ)
         end
 
     end

@@ -1,7 +1,7 @@
 ##############################################################
 # GateType enum
 ##############################################################
-@enum GateType PauliX PauliY PauliZ Hadamard CNOT CNOT12 CNOT21 CZ SWAP
+@enum GateType Identity PauliX PauliY PauliZ Hadamard CNOT CNOT12 CNOT21 CZ SWAP
 
 SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard]
 
@@ -12,7 +12,9 @@ SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard]
 function unitary(gate::GateType)
     # Returns the unitary associated with the gate
     # as a 2x2 or 4x4 matrix
-    if gate == PauliX
+    if gate == Identity
+        return Matrix{Int}(I, 2, 2)
+    elseif gate == PauliX
         return PauliX_gate()
     elseif gate == PauliY
         return PauliY_gate()

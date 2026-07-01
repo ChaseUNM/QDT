@@ -48,7 +48,7 @@ ipopt_options = ["max_iter" => 50,
 n_samples_opt_1q = 10
 
 # Gate set
-one_qubit_gates  = [PauliX, PauliZ]
+one_qubit_gates  = [Identity, PauliX, PauliZ]
 
 
 # MCMC Parameters
