@@ -5,12 +5,14 @@ using LinearAlgebra, QuantumGateDesign, ValueHistories
 # GATE TYPES
 ########################################################################
 
-@enum GateType PauliX PauliY PauliZ Hadamard Tgate CNOT
+@enum GateType IdentityGate PauliX PauliY PauliZ Hadamard Tgate CNOT SWAP CZ
 
 function unitary(gate::GateType)
     # Returns the unitary associated with the gate
     # as a 2x2 or 4x4 matrix
-    if gate == PauliX
+    if gate == IdentityGate
+        return [1 0; 0 1]
+    elseif gate == PauliX
         return PauliX_gate()
     elseif gate == PauliY
         return PauliY_gate()
@@ -22,8 +24,12 @@ function unitary(gate::GateType)
         return T_gate()
     elseif gate == CNOT
         return CNOT_gate()
+    elseif gate == SWAP
+        return SWAP_gate()
+    elseif gate == CZ 
+        return ControlledZ_gate()
     else
-        throw("GateType::unitary() You shouldnt be here?")
+        throw("GateType::unitary() No such unitary")
     end
 end
 
@@ -336,9 +342,9 @@ end
 
 function optimize_control(
             q::DigitalQudit, 
-            gate::GateType; 
+            gate::Union{GateType,ProductGate}; 
             dt = 0.2,
-            options=["max_iter" => 100, "print_level" => 3], 
+            options=["max_iter" => 100, "print_level" => 3], max_amplitude::Float64 = 0.1,
             iter::Int = -1
     )
     # Optimizes the control signals for this qudit to implement 
@@ -348,7 +354,7 @@ function optimize_control(
 
     # Extract control variables
     q_control = q.controls[gate]
-    max_amplitude = q_control.max_amplitude
+    
     _, control_obj = last(q_control.objs)
     T_gate = control_obj.tf
     _, control_coeffs = last(q_control.coeffs)
@@ -359,7 +365,8 @@ function optimize_control(
     # Run the optimizer
     opt_ret_multiple = optimize_prob(
                             probs, control_obj, control_coeffs, U_target, pcof_lbound=-max_amplitude, pcof_ubound=max_amplitude, cost_type=:Infidelity, ipopt_options=options, 
-                            ridge_penalty_strength = 1e-2, order = 4
+                            ridge_penalty_strength = 1e-4, objective_tol = 1E-4, 
+                            order = 4
                         )
 
     # Save results     
@@ -369,9 +376,10 @@ end
 
 function predicted_infidelity(
         q::DigitalQudit, 
-        gate::GateType,
+        gate::Union{GateType,ProductGate},
         q_control::QuditControl; 
-        dt = 0.2, 
+        dt = 0.2,
+        ridge_penalty::Union{Nothing, <:Real} = nothing, 
         iter::Int = -1)
     
     N = q.Ne + q.Ng 
@@ -380,7 +388,7 @@ function predicted_infidelity(
     state_infidelity = 0
 
     pcof = get(q_control.coeffs)
-    ridge_penalty = 0
+    ridge_sum = 0
     n_probs = length(get(q.omega))
     state_infidelity_vec = zeros(n_probs)
     for i in 1:n_probs 
@@ -392,10 +400,12 @@ function predicted_infidelity(
         # println("norm prob $i: ", norm.(eachcol(psi_final[i,:,:])))
         state_infidelity += 1 - (1/q.Ne^2)*abs(dot(psi_final[i,:,:], U_target))^2
         state_infidelity_vec[i] = 1 - (1/q.Ne^2)*abs(dot(psi_final[i,:,:], U_target))^2
-        ridge_penalty += dot(pcof, pcof)*1e-2/length(pcof)
+        if !isnothing(ridge_penalty)
+            ridge_sum += dot(pcof, pcof)*ridge_penalty/length(pcof)
+        end
     end
     # println(state_infidelity/n_probs)
     # println("n probs: ", n_probs)
     # println("state infidelities: ", state_infidelity_vec)
-    return (state_infidelity + ridge_penalty)/n_probs
+    return (state_infidelity + ridge_sum)/n_probs
 end

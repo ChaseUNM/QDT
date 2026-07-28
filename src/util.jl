@@ -71,9 +71,9 @@ end
 function clamp_eigs(A::Matrix{<:Real}; min_eig::Real = 1E-10, max_eig::Real=1.0)
     F = eigen(A)
     λ = F.values 
-    V = F.vectors 
-    λ .= clamp.(λ, min_eig, max_eig)
-    return V * diagm(λ) * V'
+    V = F.vectors
+    λ .= clamp.(real.(λ), min_eig, max_eig)
+    return real.(V * diagm(λ) * V')
 end
 
 function true_posterior(event_obs_total,
@@ -100,7 +100,8 @@ function true_posterior_multi(event_obs_total,
     ω::Vector{<:Real}, 
     ωr::Vector{<:Real}, 
     degree::Vector{<:Real}, 
-    n_splines::Vector{<:Real}, 
+    n_splines::Vector{<:Real},
+    carrier_freqs::Union{AbstractVector, Nothing}, 
     U0, 
     T::Vector{<:Real}, 
     nsteps::Vector{<:Real}, 
@@ -147,4 +148,235 @@ function max_tag(dir::String)
     end
 
     return max_val == -Inf ? nothing : max_val
+end
+
+function eigen_and_reorder(H0; verbose=false)
+
+    Ntot = size(H0, 1)
+
+    # Eigenvalue decomposition
+    F = eigen(H0)
+
+    # Sort eigenvalues in ascending order
+    perm = sortperm(real(F.values))
+    evals = F.values[perm]
+    evects = F.vectors[:, perm]
+
+    # Find the column containing the largest element in each row
+    max_col = zeros(Int, Ntot)
+
+    for row in 1:Ntot
+        max_col[row] = argmax(abs.(evects[row, :]))
+    end
+
+    # Check for duplicate column assignments
+    Ndup_col = 0
+    for row in 1:Ntot-1
+        for k in row+1:Ntot
+            if max_col[row] == max_col[k]
+                Ndup_col += 1
+                println("Error: detected identical max_col = $(max_col[row]) for rows $row and $k")
+            end
+        end
+    end
+
+    if Ndup_col > 0
+        error("Permutation of eigenvector matrix failed.")
+    end
+
+    # Reorder eigenvectors/eigenvalues
+    evects = evects[:, max_col]
+    evals = evals[max_col]
+
+    # Make diagonal entries positive
+    for j in 1:Ntot
+        if real(evects[j,j]) < 0
+            evects[:,j] .*= -1
+        end
+    end
+
+    return evals, evects
+
+end
+
+function map_to_oscillators(id::Integer, Ne::AbstractVector{<:Integer},
+                            Ng::AbstractVector{<:Integer})
+
+    # Number of levels in each subsystem
+    nlevels = Ne .+ Ng
+
+    localIDs = Int[]
+
+    # Convert to zero-based indexing internally
+    index = id - 1
+
+    for iosc in eachindex(Ne)
+
+        postdim = isempty(nlevels[iosc+1:end]) ? 1 : prod(nlevels[iosc+1:end])
+
+        push!(localIDs, div(index, postdim))
+
+        index = mod(index, postdim)
+    end
+
+    return localIDs
+end
+
+gate_to_str(g) = g == PauliX ? "X" :
+                g == PauliY ? "Y" :
+                g == PauliZ ? "Z" :
+                g == Hadamard ? "Hadamard" :
+                g == Tgate ? "T" :
+                g == IdentityGate ? "I" :
+                string(g)
+
+function gate_to_str(gate::ProductGate)
+    left_gate = gate.left 
+    right_gate = gate.right
+    gate_str = gate_to_str(gate.left) * "⊗" * gate_to_str(gate.right)
+    return gate_str 
+end
+
+function get_resonances(;
+    Ne,
+    Ng,
+    Hsys,
+    Hc_re = [],
+    Hc_im = [],
+    rotfreq = [],
+    cw_amp_thres = 1e-7,
+    cw_prox_thres = 1e-2,
+    verbose = true,
+    stdmodel = true
+)
+
+    if verbose
+        println("\nComputing carrier frequencies, ignoring growth rate slower than ",
+            cw_amp_thres,
+            " and frequencies closer than ",
+            cw_prox_thres,
+            " [GHz]")
+    end
+
+    nqubits = length(Ne)
+    n = size(Hsys,1)
+
+    # Eigenvalues and reordered eigenvectors
+    Hsys_evals, Utrans = eigen_and_reorder(Hsys, verbose = verbose)
+
+    Hsys_evals = real.(Hsys_evals) ./ (2π)
+
+    resonances = [Float64[] for _ in 1:nqubits]
+    speed       = [Float64[] for _ in 1:nqubits]
+
+    for q in 1:nqubits
+
+        Hsym_trans  = Utrans' * Hc_re[q] * Utrans
+        Hanti_trans = Utrans' * Hc_im[q] * Utrans
+
+        resonances_a = Float64[]
+        speed_a = Float64[]
+
+        if verbose
+            println("  Resonances in oscillator #", q)
+        end
+
+        for Hc_trans in (Hsym_trans, Hanti_trans)
+
+            for i in 1:n
+                for j in 1:i-1
+
+                    abs(Hc_trans[i,j]) < 1e-14 && continue
+
+                    delta_f = Hsys_evals[i] - Hsys_evals[j]
+
+                    if abs(delta_f) < 1e-10
+                        delta_f = 0.0
+                    end
+
+                    ids_i = map_to_oscillators(i, Ne, Ng)
+                    ids_j = map_to_oscillators(j, Ne, Ng)
+
+                    is_ess_i = all(ids_i[k] < Ne[k] for k in eachindex(Ne))
+                    is_ess_j = all(ids_j[k] < Ne[k] for k in eachindex(Ne))
+
+                    if is_ess_i && is_ess_j
+
+                        if any(abs(delta_f - f) < cw_prox_thres for f in resonances_a)
+
+                            if verbose
+                                println("    Ignoring resonance from ",
+                                    ids_j,
+                                    " to ",
+                                    ids_i,
+                                    ", freq ",
+                                    delta_f,
+                                    ", growth rate = ",
+                                    abs(Hc_trans[i,j]),
+                                    " being too close to one that already exists.")
+                            end
+
+                        elseif abs(Hc_trans[i,j]) < cw_amp_thres
+
+                            if verbose
+                                println("    Ignoring resonance from ",
+                                    ids_j,
+                                    " to ",
+                                    ids_i,
+                                    ", freq ",
+                                    delta_f,
+                                    ", growth rate = ",
+                                    abs(Hc_trans[i,j]),
+                                    " growth rate is too slow.")
+                            end
+
+                        else
+
+                            push!(resonances_a, delta_f)
+                            push!(speed_a, abs(Hc_trans[i,j]))
+
+                            if verbose
+                                println("    Resonance from ",
+                                    ids_j,
+                                    " to ",
+                                    ids_i,
+                                    ", freq ",
+                                    delta_f,
+                                    ", growth rate = ",
+                                    abs(Hc_trans[i,j]))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        resonances[q] = resonances_a
+        speed[q] = speed_a
+    end
+
+    # Prepare output
+    Nfreq = zeros(Int, nqubits)
+
+    om = Vector{Vector{Float64}}(undef, nqubits)
+    growth_rate = Vector{Vector{Float64}}(undef, nqubits)
+
+    for q in 1:nqubits
+
+        Nfreq[q] = max(1, length(resonances[q]))
+
+        if isempty(resonances[q])
+            om[q] = zeros(Nfreq[q])
+        else
+            om[q] = copy(resonances[q])
+        end
+
+        if isempty(speed[q])
+            growth_rate[q] = ones(Nfreq[q])
+        else
+            growth_rate[q] = copy(speed[q])
+        end
+    end
+
+    return om, growth_rate
 end

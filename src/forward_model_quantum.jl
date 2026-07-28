@@ -20,8 +20,10 @@ function forward_event_quantum(ω, ωr, degree, n_splines, U0, T, nsteps, pcof_o
     delta = ω - ωr
     # println("delta: ", delta)
     # display(U0)
+
     prob = SchrodingerProb(Float64[0 0; 0 delta], real_control_ops, imag_control_ops, U0, T, nsteps)
-    event_obs = eval_forward(prob, control, pcof_optimal)
+
+    event_obs = eval_forward(prob, control, pcof_optimal, order = 4)
     event_obs = abs2.(event_obs)
     # normalize evolution so p_1 + p_2 = 1
     n_tot, _, n_ess = size(event_obs)
@@ -33,7 +35,7 @@ function forward_event_quantum(ω, ωr, degree, n_splines, U0, T, nsteps, pcof_o
     return event_obs 
 end
 
-function forward_event_quantum_multi(Ne::Vector{<:Real}, Ng::Vector{<:Real}, ω::Vector{<:Real}, ωr::Vector{<:Real}, ξ::Vector{<:Real}, dipole::Real, cross_kerr::Real, degree::Real, n_splines::Real, U0::AbstractMatrix, T::Real, nsteps::Real, pcof_optimal::AbstractVector, carrier_freqs::Vector{<:Real})
+function forward_event_quantum_multi(Ne::Vector{<:Real}, Ng::Vector{<:Real}, ω::Vector{<:Real}, ωr::Vector{<:Real}, ξ::Vector{<:Real}, dipole::Real, cross_kerr::Real, degree::Real, n_splines::Real, U0::AbstractMatrix, T::Real, nsteps::Real, pcof_optimal::AbstractVector, carrier_freqs::Union{Nothing, AbstractVector} = nothing)
     subsystem_sizes = [Ne[1]+Ng[1], Ne[2]+Ng[2]]
     N = prod(subsystem_sizes)
     # println("omega1: ", ω[1])
@@ -79,26 +81,37 @@ function forward_event_quantum_multi(Ne::Vector{<:Real}, Ng::Vector{<:Real}, ω:
         promote_subsys_op(H_c_im_1, subsystem_sizes, 1),
         promote_subsys_op(H_c_im_2, subsystem_sizes, 2),  
     ]
-    base_control1 = FortranBSplineControl(degree, n_splines, T)
-    base_control2 = FortranBSplineControl(degree, n_splines, T)
 
-    control1 = CarrierControl(
-                base_control1, 
-                (ω[1]-ωr[1]) .- carrier_freqs
-             )
-    control2 = CarrierControl(
-                base_control2, 
-                (ω[2]-ωr[2]) .- carrier_freqs
-             )
-    
+    control1 = FortranBSplineControl(degree, n_splines, T)
+    control2 = FortranBSplineControl(degree, n_splines, T)
+    # println("base control")
+    # display(base_control1)
+    # base_control1 =
+    if !isnothing(carrier_freqs)
+        control1 = CarrierControl(
+                    control1, 
+                    carrier_freqs[1],
+                )
+        control2 = CarrierControl(
+                    control2, 
+                    carrier_freqs[2]
+                )
+    end
+
     # println("H_drift")
     # display(H_drift)
+    # println(pcof_optimal[1])
+    # println(pcof_optimal[2])
     prob = SchrodingerProb(H_drift, H_c_re, H_c_im, U0, T, nsteps)
     event_state = eval_forward(
             prob,
             [control1, control2],
-            [pcof_optimal[1]; pcof_optimal[2]]
+            [pcof_optimal[1]; pcof_optimal[2]], 
+            order = 4
         )
+
+    # println("probs")
+    # display(prob)
     # change norm to 1 
     basis_change = kron(Hadamard_gate(), Hadamard_gate())
     event_state_normalized = deepcopy(event_state)
@@ -114,11 +127,14 @@ function forward_event_quantum_multi(Ne::Vector{<:Real}, Ng::Vector{<:Real}, ω:
     
     # println("event state")
     # display(event_state)
-    event_obs = abs2.(event_state)
+    event_obs = abs2.(event_state_normalized)
+    # event_obs = abs2.(event_state)
+
     for i in 1:nsteps + 1
         for j in 1:N
             event_obs[:,i,j] = event_obs[:,i,j]/sum(event_obs[:,i,j])
         end 
     end
+
     return event_obs, event_obs_H, event_state
 end

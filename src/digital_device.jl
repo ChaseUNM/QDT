@@ -36,15 +36,15 @@ mutable struct DigitalQuditPair
     qudit2::DigitalQudit
     xi::History{Int64, Vector{Float64}}
     J::History{Int64, Vector{Float64}}
-    controls::Dict{GateType, Vector{QuditControl}}
-    infidelity::Dict{GateType, History{Int64, Float64}}
+    controls::Dict{Union{GateType,ProductGate}, Vector{QuditControl}}
+    infidelity::Dict{Union{GateType,ProductGate}, History{Int64, Float64}}
 
     # CONSTRUCTOR
     function DigitalQuditPair(q1::DigitalQudit, q2::DigitalQudit)
         xi = History(Vector{Float64})
         J  = History(Vector{Float64})
-        controls = Dict{GateType, Vector{QuditControl}}()
-        infidelity = Dict{GateType, History{Int64, Float64}}()
+        controls = Dict{Union{GateType,ProductGate}, Vector{QuditControl}}()
+        infidelity = Dict{Union{GateType,ProductGate}, History{Int64, Float64}}()
 
         new(q1, q2, xi, J, controls, infidelity)
     end
@@ -127,7 +127,7 @@ end
 
 function add_control(
     self::DigitalQuditPair,
-    gate::GateType,
+    gate::Union{GateType, ProductGate},
     q1_control::QuditControl,
     q2_control::QuditControl
 )
@@ -318,7 +318,7 @@ function run_control(
         state_history = eval_forward(
             probs[j],
             [control_obj1, control_obj2],
-            [control_coeffs1; control_coeffs2]
+            [control_coeffs1; control_coeffs2], order = 4
         )
 
         Psi[j, :, :] = state_history[:, end, :]
@@ -376,9 +376,10 @@ end
 
 function optimize_control(
     self::DigitalQuditPair,
-    gate::GateType;
+    gate::Union{GateType,ProductGate};
     dt = 0.2,
     options = ["max_iter" => 100, "print_level" => 3],
+    max_amplitude::Union{Nothing, Float64} = nothing, 
     iter::Int64 = -1
 )
     q1 = self.qudit1
@@ -391,7 +392,9 @@ function optimize_control(
 
     q1_control, q2_control = self.controls[gate]
 
-    max_amplitude = min(q1_control.max_amplitude, q2_control.max_amplitude)
+    if isnothing(max_amplitude) 
+        max_amplitude = min(q1_control.max_amplitude, q2_control.max_amplitude)
+    end
 
     iter1, control_obj1 = last(q1_control.objs)
     iter2, control_obj2 = last(q2_control.objs)
@@ -411,7 +414,7 @@ function optimize_control(
         pcof_lbound = -max_amplitude,
         pcof_ubound = max_amplitude,
         cost_type = :Infidelity,
-        ipopt_options = options
+        ipopt_options = options, ridge_penalty_strength = 1e-4, objective_tol = 1E-4, order = 4
     )
 
     n_coeffs1 = length(control_coeffs1)
@@ -426,4 +429,51 @@ function optimize_control(
     push!(self.infidelity[gate], iter, opt_ret_multiple.obj_val)
 
     return opt_ret_multiple
+end
+
+function predicted_infidelity(
+        q::DigitalQuditPair, 
+        gate::Union{GateType,ProductGate},
+        q_control1::QuditControl,
+        q_control2::QuditControl; 
+        dt = 0.2, 
+        iter::Int = -1,
+        ridge_penalty::Union{Nothing, <:Real} = nothing)
+    
+    q1 = q.qudit1
+    q2 = q.qudit2
+
+    n = [q1.Ne + q1.Ng, q2.Ne + q2.Ng]
+    n_ess = [q1.Ne, q2.Ne]
+    # N1 = q.qudit1.Ne
+    # N2 = q.qudit2.Ne
+    N = (q.qudit1.Ne + q.qudit1.Ng) * (q.qudit2.Ne + q.qudit2.Ng)
+    Ne = q.qudit1.Ne * q.qudit2.Ne
+    U_target = unitary(gate, [1, 2], n, n_ess)
+    psi_final = run_control(q, q_control1, q_control2, dt = dt)
+    state_infidelity = 0
+
+    pcof_1 = get(q_control1.coeffs)
+    pcof_2 = get(q_control2.coeffs)
+    pcof_total = vcat(pcof_1, pcof_2)
+    ridge_sum = 0
+    n_probs = length(get(q.xi))
+    state_infidelity_vec = zeros(n_probs)
+    for i in 1:n_probs 
+        # state_infidelity += infidelity(psi_final[i,:,:], U_target, size(U_target, 2))
+        
+        # psi_final_normal = psi_final[i,:,:]./norm.(eachcol(psi_final[i,:,:]))
+        # println("psi_final 2")
+        # display(psi_final_normal)
+        # println("norm prob $i: ", norm.(eachcol(psi_final[i,:,:])))
+        state_infidelity += 1 - (1/Ne^2)*abs(dot(psi_final[i,:,:], U_target))^2
+        state_infidelity_vec[i] = 1 - (1/Ne^2)*abs(dot(psi_final[i,:,:], U_target))^2
+        if !isnothing(ridge_penalty)
+            ridge_sum += dot(pcof_total, pcof_total)*ridge_penalty/length(pcof_total)
+        end
+    end
+    # println(state_infidelity/n_probs)
+    # println("n probs: ", n_probs)
+    # println("state infidelities: ", state_infidelity_vec)
+    return (state_infidelity + ridge_sum)/n_probs
 end

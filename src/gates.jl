@@ -3,18 +3,25 @@ using LinearAlgebra, QuantumGateDesign
 ##############################################################
 # GateType enum
 ##############################################################
-@enum GateType PauliX PauliY PauliZ Hadamard Tgate CNOT
+@enum GateType IdentityGate PauliX PauliY PauliZ Hadamard Tgate CNOT SWAP CZ
 
 SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard, Tgate]
 
 ##############################################################
 # Functions to get unitaries
 ##############################################################
+struct ProductGate
+    left::GateType
+    right::GateType
+end
+
 
 function unitary(gate::GateType)
     # Returns the unitary associated with the gate
     # as a 2x2 or 4x4 matrix
-    if gate == PauliX
+    if gate == IdentityGate
+        return [1 0; 0 1]
+    elseif gate == PauliX
         return PauliX_gate()
     elseif gate == PauliY
         return PauliY_gate()
@@ -26,8 +33,12 @@ function unitary(gate::GateType)
         return T_gate()
     elseif gate == CNOT
         return CNOT_gate()
+    elseif gate == SWAP
+        return SWAP_gate()
+    elseif gate == CZ 
+        return ControlledZ_gate()
     else
-        throw("GateType::unitary() You shouldnt be here?")
+        throw("GateType::unitary() No such unitary")
     end
 end
 
@@ -46,7 +57,7 @@ function unitary(gate::GateType, n::Int64)
 end
 
 
-
+# implement Unitary for gates that act on single qubits or 2 qubit entangling gates such as CNOT, SWAP, and CZ
 function unitary(
             gate::GateType, 
             which_qudits::Vector{Int}, 
@@ -126,10 +137,62 @@ function unitary(
 
 
     # Not yet implemented!
-    else 
+    elseif gate == SWAP 
+        @assert length(which_qudits) == 2 "CNOT gate should only specify two active qudits"
+
+        i = which_qudits[1]
+        j = which_qudits[2]
+        d = length(n)
+        op_I = [Matrix{Float64}(I, n[k], n[k]) for k = 1:d]
+        op_X = [Matrix{Float64}(I, n[k], n[k]) for k = 1:d]
+        op_Y = [Matrix{ComplexF64}(I, n[k], n[k]) for k = 1:d]
+        op_Z = [Matrix{Float64}(I, n[k], n[k]) for k = 1:d]
+        op_X[i], op_X[j] = PauliX_gate(), PauliX_gate()
+        op_Y[i], op_Y[j] = PauliY_gate(), PauliY_gate()
+        op_Z[i], op_Z[j] = PauliZ_gate(), PauliZ_gate() 
+
+        SWAP_full = 0.5*(reduce(kron, op_I) + reduce(kron, op_X) + reduce(kron, op_Y) + reduce(kron, op_Z))
+
+        return SWAP_full * initial_states(n, n_ess)
+
+    elseif gate == CZ 
+        i = which_qudits[1]
+        j = which_qudits[2] 
+        d = length(n)
+        op_1 = [Matrix{Float64}(I, n[k], n[k]) for k = 1:d]
+        op_2 = [Matrix{Float64}(I, n[k], n[k]) for k = 1:d]
+
+        op_1[i] = [1 0; 0 0]
+        op_2[i] = [0 0; 0 1]
+        op_2[j] = [1 0; 0 -1]
+        CZ_full = reduce(kron, op_1) + reduce(kron, op_2)
+
+        return CZ_full * initial_states(n, n_ess)
+
+    else
         throw("gates.jl::unitary(): requested gate not yet implemented!")
     end
 
+end
+
+# implement Unitary for single qubit gates that act on two different qubits, such as I ⊗ X. 
+
+function unitary(
+            gate::ProductGate,
+            which_qudits::Vector{Int}, 
+            n::Vector{Int},
+            n_ess::Vector{Int})
+    i = which_qudits[1]
+    j = which_qudits[2]
+    d = length(n)
+    gate_1 = gate.left
+    gate_2 = gate.right
+    op = [Matrix{Float64}(I, n[k], n[k]) for k = 1:d]
+    op[i] = unitary(gate_1, i)
+    op[j] = unitary(gate_2, j)
+
+    gate_full = reduce(kron, op)
+    return gate_full * initial_states(n, n_ess)
 end
 
 

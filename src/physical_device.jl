@@ -156,7 +156,7 @@ function run_control_physical(q_physical::PhysicalQudit, q_control::QuditControl
     # println("Omega rotation: ",q.omega_rot)
     # Run simulation for each parameter setting    
     Psi = zeros(Complex, q.Ne + q.Ng, q.Ne)
-    state_history = eval_forward(prob, control_obj, control_coeffs)
+    state_history = eval_forward(prob, control_obj, control_coeffs, order = 4)
     Psi[:,:] = state_history[:,end,:]
 
     return Psi, state_history
@@ -167,7 +167,7 @@ function run_control_physical(
     q1_control::QuditControl,
     q2_control::QuditControl;
     dt = 0.2
-)
+)   
     q_pair = q_pair_physical.qudit_pair
 
     _, control_obj1 = last(q1_control.objs)
@@ -179,14 +179,14 @@ function run_control_physical(
     _, control_coeffs2 = last(q2_control.coeffs)
 
     probs = get_schrodinger_problems(q_pair, T_gate, dt)
-
+    
     # Deterministic, so use the first and only parameter sample
     prob = probs[1]
-    
     state_history = eval_forward(
         prob,
         [control_obj1, control_obj2],
-        [control_coeffs1; control_coeffs2]
+        [control_coeffs1; control_coeffs2], 
+        order = 4
     )
 
     Psi = state_history[:, end, :]
@@ -238,7 +238,7 @@ end
 
 function measure_infidelity(
     q_pair_physical::PhysicalQuditPair,
-    gate::GateType,
+    gate::Union{GateType,ProductGate},
     q1_control::QuditControl,
     q2_control::QuditControl,
     n_readout_samples::Int64;
@@ -263,27 +263,30 @@ function measure_infidelity(
         q2_control;
         dt = dt
     )
-
+    # println("psi_final in code: ")
+    display(abs2.(psi_final))
     # Normalize each output column
-    psi_final = psi_final ./ norm.(eachcol(psi_final))
-
+    # psi_final = psi_final ./ norm.(eachcol(psi_final))'
+    # display(abs2.(psi_final))
     # State infidelity
     state_infidelity = infidelity(
         psi_final,
         U_target,
         size(U_target, 2)
     )
-
+    
     # Population infidelity
     observed_populations = abs2.(psi_final)
+    # display(observed_populations)
+    observed_populations = observed_populations ./ sum(eachcol(observed_populations))
+    # then row normalize 
     observed_history = abs2.(psi_history)
-
+    
     if add_SPAM
-
-        observed_populations = sample_quantum_state(
-            n_readout_samples,
-            q_pair_physical.M_spam * observed_populations
-        )
+        # observed_populations = sample_quantum_state(
+        #     n_readout_samples,
+        #     q_pair_physical.M_spam * observed_populations
+        # )
 
         observed_history = sample_quantum_state_history(
             n_readout_samples,
@@ -293,9 +296,9 @@ function measure_infidelity(
     end
 
     population_infidelity = infidelity_population(
-        observed_populations,
+        observed_history[:,end,:],
         abs2.(U_target)
     )
 
-    return state_infidelity, population_infidelity, observed_history
+    return state_infidelity, population_infidelity, observed_history, psi_final
 end

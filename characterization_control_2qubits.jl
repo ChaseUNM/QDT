@@ -6,27 +6,14 @@
 # - The script is written as a script (top-level); consider refactoring into functions for testability
 #   and reusability (see improvement notes below).
 
-using LinearAlgebra, Plots, QuantumGateDesign, Random, Distributions, JLD2, OrderedCollections, Dates
-include("src/DistributionFit.jl")
-include("src/digital_qudit.jl")
-include("src/digital_device.jl")
-include("src/physical_device.jl")
-include("src/util.jl")
-include("src/wasserstein_inference.jl")
-include("src/postprocessing.jl")
-include("src/forward_model_quantum.jl")
-
+include("src/QDT_src.jl")
 Random.seed!(50)
 # Random_seed_list = [10,20,30,40,50,60,70,80,90,100,110,120,130140,150,160,170,180,190,200]
 
 # flags for saving and loading data, plotting, and for running the full characterization loop
-save_data = true
-load_data = false
-plot_results = true
-run_loop = true
-use_initial_samples = false
 
 
+#=
 # -------------------------
 # Basic model and timescale
 # -------------------------
@@ -44,16 +31,26 @@ M_spam_order = 1E-4
 
 n_iters_opt = 100
 dt_opt = 0.2
-
+ω1_min = ω1 - 0.2
+ω1_max = ω1 + 0.2
+ω2_min = ω2 - 0.2
+ω2_max = ω2 + 0.2
+ξmin = ξ12 - 0.1
+ξmax = ξ12 + 0.1
 
 # Control parametrization: B-splines
 degree = 2
-n_splines = 10 
+n_splines = 10
 T = 50
-nsteps = 400
+nsteps = 100
 dt = T/nsteps
-carrier_freqs = [0, 0*ξ12, 0*ξ12]
-n_freq = length(carrier_freqs)
+Δ1 = ω1 - ωr
+Δ2 = ω2 - ωr
+carrier_freqs_1 = [Δ1, Δ1 - ξ12]
+carrier_freqs_2 = [Δ2, Δ2 - ξ12]
+carrier_freqs = [carrier_freqs_1, carrier_freqs_2]
+n_freq_1 = length(carrier_freqs_1)
+n_freq_2 = length(carrier_freqs_2)
 
 #################################################################
 # SETUP
@@ -79,25 +76,25 @@ add_param_samples(pair, [ξ12], [J12])
 base_control = FortranBSplineControl(degree, n_splines, T)
 q1_control = CarrierControl(
                 base_control, 
-                (ω1-q1.omega_rot) .- carrier_freqs
+                carrier_freqs_1
              )
 q2_control = CarrierControl(
                 base_control, 
-                (ω2-q2.omega_rot) .- carrier_freqs
+                carrier_freqs_2
              )
 
 q1_control_QDT = QuditControl(q1_control)
 q2_control_QDT = QuditControl(q2_control)
 # q1_control_QDT = QuditControl(base_control)
 # q2_control_QDT = QuditControl(base_control)
-push!(q1_control_QDT.coeffs, 0, rand(2*n_splines*n_freq))
-push!(q2_control_QDT.coeffs, 0, rand(2*n_splines*n_freq))
+push!(q1_control_QDT.coeffs, 0, 0.1*rand(2*n_splines*n_freq_1))
+push!(q2_control_QDT.coeffs, 0, 0.1*rand(2*n_splines*n_freq_2))
 
 
 add_control(pair, CNOT, q1_control_QDT, q2_control_QDT)
 
 # Create a PhysicalQudit instance used for simulating real device outcomes
-Random.seed!(60)
+# Random.seed!(60)
 phys_q_1 = PhysicalQudit(
                     Ne, Ng, 
                     ω1, ωr, ξ1,
@@ -113,15 +110,15 @@ phys_q_2 = PhysicalQudit(
 physical_pair = PhysicalQuditPair(phys_q_1, phys_q_2, ξ12, J12, M_spam_order = M_spam_order)
 
 # Optimize the CNOT gate
-optimize_control(pair, CNOT, dt=dt_opt, 
-                options=["max_iter" => n_iters_opt, "print_level" => 5, "limited_memory_max_history" => 250])
+# optimize_control(pair, CNOT, dt=dt_opt, 
+#                 options=["max_iter" => n_iters_opt, "print_level" => 5, "limited_memory_max_history" => 250])
 
 # Testing the control
-dt = 0.005
-Psi= run_control(pair, 
-                  pair.controls[CNOT][1], 
-                  pair.controls[CNOT][2], 
-                  dt=dt)
+# dt = 0.25
+# Psi= run_control(pair, 
+#                   pair.controls[CNOT][1], 
+#                   pair.controls[CNOT][2], 
+#                   dt=dt)
 
 # Psi = Psi[1,:,:]
 Psi_physical, history_physical = run_control_physical(physical_pair, 
@@ -130,14 +127,14 @@ Psi_physical, history_physical = run_control_physical(physical_pair,
                   dt=dt)
 
 
-p_inf, s_inf, hist = measure_infidelity(physical_pair, 
-                CNOT, pair.controls[CNOT][1], 
-                pair.controls[CNOT][2], 100000, 
-                add_SPAM = true, dt = dt)
+# p_inf, s_inf, hist = measure_infidelity(physical_pair, 
+#                 CNOT, pair.controls[CNOT][1], 
+#                 pair.controls[CNOT][2], 100000, 
+#                 add_SPAM = true, dt = dt)
  
  
-pcof_optimal_1 = get(pair.controls[CNOT][1].coeffs)
-pcof_optimal_2 = get(pair.controls[CNOT][2].coeffs)
+# pcof_optimal_1 = get(pair.controls[CNOT][1].coeffs)
+# pcof_optimal_2 = get(pair.controls[CNOT][2].coeffs)
 
 # create maximum amount of data for using characterization
 max_data = 1000
@@ -148,7 +145,7 @@ nsteps_forward = Int(T/dt)
 
 
 xi_perturbation = 0.0
-omega_1_perturbation = 0.0
+omega_1_perturbation = 0.01
 omega_2_perturbation = 0.0
 
 # change it so initial controls are quadratic splines with carrier frequencies
@@ -161,11 +158,23 @@ pcof_optimal_1 = rand() * max_control_parameter .* ones(q1_control.N_coeff)
 pcof_optimal_2 = rand() * max_control_parameter .* ones(q2_control.N_coeff)
 
 
+degree = 2
+n_splines = 10 
+T = 50.0
+pcof_optimal_1 = 0.1*[1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+pcof_optimal_2 = 0.1*[1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+Random.seed!(42)
+pcof_optimal_1 = 0.1*rand(2*length(carrier_freqs_1)*n_splines)
+pcof_optimal_2 = 0.1*rand(2*length(carrier_freqs_2)*n_splines)
 
-event_obs, _, event_state = forward_event_quantum_multi([Ne, Ne], [Ng, Ng], [ω1, ω2], [ωr, ωr], [ξ1, ξ2], J12, ξ12, degree, n_splines, Matrix(1.0*I, 4, 4), T, nsteps, [pcof_optimal_1, pcof_optimal_2], carrier_freqs)
+event_obs, _, event_state = forward_event_quantum_multi([Ne, Ne], [Ng, Ng], [ω1, ω2], [ωr, ωr], [ξ1, ξ2], J12, ξ12, degree, n_splines, Matrix(1.0*I, 4, 4), T, 200, [pcof_optimal_1, pcof_optimal_2], carrier_freqs)
 event_obs_2, _, event_state_2 = forward_event_quantum_multi([Ne, Ne], [Ng, Ng], [ω1 + omega_1_perturbation, ω2 + omega_2_perturbation], [ωr, ωr], [ξ1, ξ2], J12, ξ12 + xi_perturbation, degree, n_splines, Matrix(1.0*I, 4, 4), T, nsteps, [pcof_optimal_1, pcof_optimal_2], carrier_freqs)
 Random.seed!(60)
 M_spam = physical_pair.M_spam
+M_spam = [0.999838 2.6558e-5 2.6558e-5 7.05444e-10;
+ 8.11831e-5 0.999892 2.15641e-9 2.65595e-5;
+ 8.11831e-5 2.15641e-9 0.999892 2.65595e-5;
+ 6.59177e-9 8.11875e-5 8.11875e-5 0.999947]
 event_obs_SPAM = sample_quantum_state_history(100000, M_spam, event_obs)
 event_obs_SPAM_2 = sample_quantum_state_history(100000, M_spam, event_obs_2)
 
@@ -192,6 +201,8 @@ if save_data
     @save joinpath(pcof_dir, "initial_pcof.jld2") pcof_optimal_1 pcof_optimal_2
     data_folder = joinpath(folder, "data")
     mkpath(data_folder)
+    chain_data = joinpath(data_folder, "chain_data")
+    mkpath(chain_data)
     # event_obs_folder = joinpath(folder, "event_obs")
     # mkpath(event_obs_folder)
     folder_histogram = joinpath(folder, "histogram")
@@ -205,16 +216,98 @@ burnin = 5000
 thin = 10
 
 run_characterization = true
-calculate_landscape = true
+calculate_landscape = false
+
+if calculate_landscape 
+    ω1_range = LinRange(ω1_min, ω1_max, 101)
+    ω2_range = LinRange(ω2_min, ω2_max, 101)
+    ξ12_range = LinRange(ξmin, ξmax, 101)
+    U0 = Matrix(1.0*I, 4, 4)
+    ω1_ω2_loss = zeros(length(ω1_range), length(ω2_range))
+    ω1_ξ12_loss = zeros(length(ω1_range), length(ξ12_range))
+    ω2_ξ12_loss = zeros(length(ω2_range), length(ξ12_range))
+    for i in eachindex(ω1_range)
+        for j in eachindex(ω2_range)
+            if ((i-1)*length(ω1_range) + j) % 1000 == 0
+                println("Evaluated for $((i-1)*length(ω1_range) + j) iterations")
+            end
+            θ = [ω1_range[i], ω2_range[j], ξ12]
+            _, _, Φ, _ = true_posterior_multi([event_obs_SPAM], 
+                                [
+                                    Uniform(ω1_min, ω1_max),
+                                    Uniform(ω2_min, ω2_max),
+                                    Uniform(ξmin, ξmax)
+                                ],
+                                θ, 
+                                [ωr, ωr], 
+                                [2], [10], 
+                                carrier_freqs, 
+                                U0, [T], [nsteps], 
+                                [[pcof_optimal_1, pcof_optimal_2]], 1, 10.0)
+            ω1_ω2_loss[i,j] = mean(Φ)
+        end
+    end
+
+    for i in eachindex(ω1_range)
+        for j in eachindex(ξ12_range)
+            
+            if ((i-1)*length(ω1_range) + j) % 1000 == 0
+                println("Evaluated for $((i-1)*length(ω1_range) + j) iterations")
+            end
+            θ = [ω1_range[i], ω2, ξ12_range[j]]
+            _, _, Φ, _ = true_posterior_multi([event_obs_SPAM], 
+                                [
+                                    Uniform(ω1_min, ω1_max),
+                                    Uniform(ω2_min, ω2_max),
+                                    Uniform(ξmin, ξmax)
+                                ],
+                                θ, 
+                                [ωr, ωr], 
+                                [2], [10], 
+                                carrier_freqs, 
+                                U0, [T], [nsteps], 
+                                [[pcof_optimal_1, pcof_optimal_2]], 1, 10.0)
+            ω1_ξ12_loss[i,j] = mean(Φ)
+        end
+    end
+
+    for i in eachindex(ω2_range)
+        for j in eachindex(ξ12_range)
+            if ((i-1)*length(ω2_range) + j) % 1000 == 0
+                println("Evaluated for $((i-1)*length(ω1_range) + j) iterations")
+            end
+            θ = [ω1, ω2_range[i], ξ12_range[j]]
+            _, _, Φ, _ = true_posterior_multi([event_obs_SPAM], 
+                                [
+                                    Uniform(ω1_min, ω1_max),
+                                    Uniform(ω2_min, ω2_max),
+                                    Uniform(ξmin, ξmax)
+                                ],
+                                θ, 
+                                [ωr, ωr], 
+                                [0], [1], 
+                                carrier_freqs, 
+                                U0, [T], [nsteps], 
+                                [[pcof_optimal_1, pcof_optimal_2]], 1, 10.0)
+            ω2_ξ12_loss[i,j] = mean(Φ)
+        end
+    end
+    ω1_ω2_loss_heatmap = heatmap(ω1_range, ω2_range, log10.(ω1_ω2_loss), xlabel = "ω1", ylabel = "ω2")
+
+    ω1_ξ12_loss_heatmap = heatmap(ω1_range, ξ12_range, log10.(ω1_ξ12_loss), xlabel = "ω1", ylabel = "ξ12")
+
+    ω2_ξ12_loss_heatmap = heatmap(ω2_range, ξ12_range, log10.(ω2_ξ12_loss), xlabel = "ω2", ylabel = "ξ12")
+end
+
 
 function characterization_2qubits(n_rounds)
     # Replace the repeated blocks with a configurable iterative loop
-    iterations = 10000
-    burnin = 8000
-    thin = 10
+    iterations = 5000
+    burnin = 4000
+    thin = 20
 
     run_characterization = true
-    calculate_landscape = true
+    calculate_landscape = false
 
     # number of characterization rounds to run (was duplicated twice in original selection)
 
@@ -226,12 +319,16 @@ function characterization_2qubits(n_rounds)
         n_splines_cfg = [10]
         U0 = Matrix(1.0*I, 4, 4)
         T_cfg = [50]
-        nsteps_cfg = [400]
+        nsteps_cfg = [200]
+        # Random.seed!(42)
+        # pcof_optimal_1 = 0.1*rand(length(carrier_freqs_1)*n_splines_cfg[1]*2)
+        # pcof_optimal_2 = 0.1*rand(length(carrier_freqs_2)*n_splines_cfg[1]*2)
         pcof_optimal_total = [[pcof_optimal_1, pcof_optimal_2]]
-        carrier_freqs = [0, 0*ξ12, 0*2*ξ12]
+
+        carrier_freqs = [carrier_freqs_1, carrier_freqs_2]
         total_data_count = 1
         ωmin = [4.3, 4.4, 0.0]
-        ωmax = [5.7, 4.8, 0.3]
+        ωmax = [4.7, 4.8, 0.3]
         event_obs_total = Vector{Array{Float64}}(undef, 1)
         event_obs_total[1] = event_obs_SPAM
 
@@ -266,7 +363,8 @@ function characterization_2qubits(n_rounds)
                     iterations = iterations,
                     scale_factor = nsteps_cfg[1] + 1,
                     burnin = burnin,
-                    thin = thin
+                    thin = thin,
+                    rng = Random.seed!(rand(1:100000))
                 )
             else
                 # form prior from previous diagnostic chain (downgraded MVN)
@@ -298,7 +396,8 @@ function characterization_2qubits(n_rounds)
                     iterations = iterations,
                     scale_factor = nsteps_cfg[1] + 1,
                     burnin = burnin,
-                    thin = thin
+                    thin = thin, 
+                    rng = Random.seed!(rand(1:100000))
                 )
             end
             # save per-round data if requested
@@ -313,7 +412,14 @@ function characterization_2qubits(n_rounds)
             # add samples to qudit objects and re-optimize controls (risk-neutral) using the inferred params
             add_param_samples(q1, w2_chain_multi.diagnostic_chain[:,1,1], zeros(length(w2_chain_multi.diagnostic_chain[:,1,1])), iter = round - 1)
             add_param_samples(q2, w2_chain_multi.diagnostic_chain[:,1,2], zeros(length(w2_chain_multi.diagnostic_chain[:,1,2])), iter = round - 1)
-            add_param_samples(pair, zeros(length(w2_chain_multi.diagnostic_chain[:,1,3])), w2_chain_multi.diagnostic_chain[:,1,3], iter = round - 1)
+            add_param_samples(pair, w2_chain_multi.diagnostic_chain[:,1,3], zeros(length(w2_chain_multi.diagnostic_chain[:,1,3])), iter = round - 1)
+            # add_param_samples(q1, [4.5], zeros(1), iter = round - 1)
+            # add_param_samples(q2, [4.6], zeros(1), iter = round - 1)
+            # add_param_samples(pair, [0.1], zeros(1), iter = round - 1)
+            q1.omega_rot = ωr 
+            q2.omega_rot = ωr
+            # println("ωr q1: ", q1.omega_rot)
+            # println("ωr q2: ", q2.omega_rot)
             if save_data
                 @save joinpath(data_folder, "w2_chain_round$(round).jld2") w2_chain_multi mean_data covariance_mat
             end
@@ -357,18 +463,31 @@ function characterization_2qubits(n_rounds)
                 end
             end
 
-            
+            # println("control 1 before")
+            # display(last(pair.controls[CNOT][1].coeffs))
             if n_rounds > 1 
                 optimize_control(pair, CNOT, dt = dt_opt,
                     options = ["max_iter" => n_iters_opt, "print_level" => 5, "limited_memory_max_history" => 250],
                     iter = round - 1)
             end
 
+            # get measured infidelity 
+            # println("control 1 after")
+            # display(last(pair.controls[CNOT][1].coeffs))
+            inf_s, inf_p, pop_history, psi_final = measure_infidelity(physical_pair, CNOT, pair.controls[CNOT][1], pair.controls[CNOT][2], 100000, dt = dt)
+            println("measured infidelity: ", inf_p)
+            println("Last population: ")
+            display(abs2.(psi_final))
+            # println("last population 2: ")
+            # _, state_hist = run_control_physical(physical_pair, pair.controls[CNOT][1], pair.controls[CNOT][2], dt = dt)
+            # display(abs2.(state_hist[:,end,:]))
             # update pcof_optimal for possible reuse in later inference rounds
             pcof_optimal_1 = get(pair.controls[CNOT][1].coeffs)
             pcof_optimal_2 = get(pair.controls[CNOT][2].coeffs)
 
-  
+            if save_data 
+                @save joinpath(pcof_dir, "pcof_optimal_$round.jld2") degree_cfg n_splines_cfg T_cfg pcof_optimal_1 pcof_optimal_2
+            end
 
         end # for round
 
@@ -380,9 +499,467 @@ function characterization_2qubits(n_rounds)
     return w2_chain_multi
 end
 
-w2_chain_multi = characterization_2qubits(4)
+w2_chain_multi = characterization_2qubits(2)
+=#
 
 
+
+
+
+function characterization_control_2qubits(max_characterizations; initial_guess::Union{Nothing, AbstractVecOrMat} = nothing)
+
+        # -------------------------
+    # Basic model and timescale
+    # -------------------------
+    ω1 = 4.5 * 2pi
+    ω2 = 4.6 * 2pi
+    # ωr = (ω1 + ω2)/2
+    ωr = 4.52 * 2pi
+    ωr_vec = [ωr, ωr]
+
+    ξ1  = 0.0
+    ξ2  = 0.0
+    ξ12 = 0.01 * 2pi # Artificially large to allow fast coupling. Actual value: 1e-6 
+    J12 = 0.00 * 2pi # 2*pi * 2.3E-3
+    true_params = [ω1, ω2, ωr, ξ12, J12]
+    Ne = 2
+    Ne_list = [2,2]
+    Ng = 0
+    Ng_list = [0,0]
+    N_tot = Ne + Ng
+    M_spam_order = 1E-4
+
+    n_iters_opt = 100
+    dt_opt = 0.2
+    ω1_min = ω1 - ω1/20
+    ω1_max = ω1 + ω1/20
+    ω2_min = ω2 - ω2/20
+    ω2_max = ω2 + ω2/20
+    ξmin = ξ12 - ξ12/20
+    ξmax = ξ12 + ξ12/20
+    Jmin = J12 - J12/20
+    Jmax = J12 + J12/20
+
+    # Control parametrization: B-splines
+    degree = 2
+    degree_init = 2
+    n_splines = 35
+    n_splines_init = 35
+    T = 200.0
+    T_init = T/10
+    nsteps = 300
+    nsteps_init = Int(nsteps/10)
+    dt = T/nsteps
+    Δ1 = ω1 - ωr
+    Δ2 = ω2 - ωr
+
+
+    #################################################################
+    # SETUP
+    #################################################################
+
+    # Create two qudits
+    q1 = DigitalQudit(Ne, Ng)
+    q2 = DigitalQudit(Ne, Ng)
+    # Set their parameter vlaues
+    add_param_samples(q1, [ω1], [ξ1])
+    add_param_samples(q2, [ω2], [ξ2])
+    # Set them to a shared rotating frame
+    # omega_rot = 0.5*(q1.omega_rot+q2.omega_rot)
+    q1.omega_rot = ωr
+    q2.omega_rot = ωr
+
+    # Put the qubits into a pair 
+    pair = DigitalQuditPair(q1, q2)
+    # Set their coupling values 
+    add_param_samples(pair, [ξ12], [J12]) 
+
+    SchroProb = get_schrodinger_problems(pair, T, dt)[1]
+    H_drift = SchroProb.system_sym
+    H_sym = SchroProb.sym_operators
+    H_asym = SchroProb.asym_operators
+
+
+    # carrier_freqs = [carrier_freqs_1, carrier_freqs_2]
+    # om, _ = get_resonances(Ne = Ne_list, Ng = Ng_list, Hsys = H_drift, Hc_re = H_sym, Hc_im = H_asym, rotfreq = [ωr, ωr])
+    # carrier_freqs_1 = om[1] .* 2pi
+    # carrier_freqs_2 = om[2] .* 2pi
+    carrier_freqs_1 = [Δ1, Δ1 - ξ12]
+    carrier_freqs_2 = [Δ2, Δ2 - ξ12]
+    carrier_freqs = [carrier_freqs_1, carrier_freqs_2]
+    carrier_freqs = nothing
+    n_freq_1 = length(carrier_freqs_1)
+    n_freq_2 = length(carrier_freqs_2)
+
+    # Create the controls for the CNOT gate
+    control_q1 = FortranBSplineControl(degree, n_splines_init, T)
+    control_q2 = FortranBSplineControl(degree, n_splines_init, T)
+
+    if !isnothing(carrier_freqs)
+
+        control_q1 = CarrierControl(
+                        control_q1, 
+                        carrier_freqs_1
+                    )
+        control_q2 = CarrierControl(
+                        control_q2, 
+                        carrier_freqs_2
+                    )
+    end
+
+    max_control_amplitude = 0.2
+
+    # include a single product gate
+    IX = ProductGate(IdentityGate, PauliX)
+
+    gates = [CNOT, SWAP, IX, CZ]
+    N_gates = length(gates)
+
+    q1_control_CNOT = QuditControl(control_q1)
+    q2_control_CNOT = QuditControl(control_q2)
+    # q1_control_SWAP = QuditControl(control_q1)
+    # q2_control_SWAP = QuditControl(control_q2)
+    # q1_control_QDT = QuditControl(base_control)
+    # q2_control_QDT = QuditControl(base_control)
+    Random.seed!(42)
+    push!(q1_control_CNOT.coeffs, 0, max_control_amplitude*(0.5 .- rand(control_q1.N_coeff)))
+    push!(q2_control_CNOT.coeffs, 0, max_control_amplitude*(0.5 .- rand(control_q2.N_coeff)))
+
+    # push!(q1_control_SWAP.coeffs, 0, max_control_amplitude*(0.5 .- rand(control_q1.N_coeff)))
+    # push!(q2_control_SWAP.coeffs, 0, max_control_amplitude*(0.5 .- rand(control_q1.N_coeff)))
+
+    q1_control_SWAP = deepcopy(q1_control_CNOT)
+    q2_control_SWAP = deepcopy(q2_control_CNOT)
+
+    q1_control_CZ = deepcopy(q1_control_CNOT)
+    q2_control_CZ = deepcopy(q2_control_CNOT)
+
+    q1_control_IX = deepcopy(q1_control_CNOT)
+    q2_control_IX = deepcopy(q2_control_CNOT)
+
+    iter_count = 1
+    add_control(pair, CNOT, q1_control_CNOT, q2_control_CNOT)
+    add_control(pair, SWAP, q1_control_SWAP, q2_control_SWAP)
+    add_control(pair, CZ, q1_control_CZ, q2_control_CZ)
+    add_control(pair, IX, q1_control_IX, q2_control_IX)
+
+    # Create a PhysicalQudit instance used for simulating real device outcomes
+    # Random.seed!(60)
+    phys_q_1 = PhysicalQudit(
+                        Ne, Ng, 
+                        ω1, ωr, ξ1,
+                        M_spam_order=M_spam_order
+                    )
+
+    phys_q_2 = PhysicalQudit(
+                        Ne, Ng, 
+                        ω2, ωr, ξ2,
+                        M_spam_order = M_spam_order
+    )
+
+    physical_pair = PhysicalQuditPair(phys_q_1, phys_q_2, ξ12, J12, M_spam_order = M_spam_order)
+
+    # initial data generation
+    pcof_optimal_1 = get(q1_control_CNOT.coeffs)
+    pcof_optimal_2 = get(q2_control_CNOT.coeffs)
+    event_obs, _, event_state = forward_event_quantum_multi([Ne, Ne], [Ng, Ng], [ω1, ω2], [ωr, ωr], [ξ1, ξ2], J12, ξ12, degree, n_splines_init, Matrix(1.0*I, 4, 4), T_init, nsteps_init, [pcof_optimal_1, pcof_optimal_2], carrier_freqs)
+    # physical_pair.M_spam = Matrix(1.0*I, 4, 4)
+    M_spam = physical_pair.M_spam
+    # M_spam = Matrix(1.0*I, 4, 4)
+
+    event_obs_SPAM = sample_quantum_state_history(100000, M_spam, event_obs)
+    # event_obs_SPAM = event_obs
+
+    save_data = true
+    load_data = false
+    plot_results = true
+    run_loop = true
+    use_initial_samples = false
+
+    experiment_name = "results/characterization_2qubits"
+    if save_data 
+        folder, tag = make_unique_folder(experiment_name)
+        pcof_dir = joinpath(folder, "pcof_optimal")
+        mkpath(pcof_dir)
+        @save joinpath(pcof_dir, "initial_pcof.jld2") pcof_optimal_1 pcof_optimal_2
+        data_folder = joinpath(folder, "data")
+        mkpath(data_folder)
+        chain_data = joinpath(data_folder, "chain_data")
+        mkpath(chain_data)
+        event_obs_folder = joinpath(data_folder, "event_obs")
+        mkpath(event_obs_folder)
+        # event_obs_folder = joinpath(folder, "event_obs")
+        # mkpath(event_obs_folder)
+        folder_histogram = joinpath(folder, "histogram")
+        mkpath(folder_histogram)
+        folder_wasserstein = joinpath(folder, "wasserstein")
+        mkpath(folder_wasserstein)
+    end
+
+    epsilon = 1E-4
+
+    θ_init = [4.4, 4.7, 0.0] .* 2pi
+    ωmin = [ω1_min, ω2_min, ξmin]
+    ωmax = [ω1_max, ω2_max, ξmax]
+
+    initial_dataset_size = 1
+    event_obs_init = Vector{Array{Float64}}(undef, initial_dataset_size)
+    event_obs_init[1] = event_obs_SPAM
+
+    event_obs_total = Vector{Array{Float64}}(undef, max_characterizations)
+    save_object(joinpath(event_obs_folder, "event_obs_0.jld2"), event_obs_init)
+
+    nsteps_total = Vector{Real}(undef, initial_dataset_size)
+    T_total = Vector{Real}(undef, initial_dataset_size)
+    n_splines_total = Vector{Real}(undef, initial_dataset_size)
+    degree_total = Vector{Real}(undef, initial_dataset_size)
+
+
+
+    q_pred_infidelity_total = OrderedDict{Int, Dict{Union{GateType,ProductGate}, Float64}}()
+    q_p_meas_infidelity_total = OrderedDict{Int, Dict{Union{GateType,ProductGate}, Float64}}()
+    control_dict_total = OrderedDict{Int, Dict{Union{GateType,ProductGate}, Vector{QuditControl}}}()
+    pcof_initial_total = Vector{Vector{Vector{Float64}}}(undef, initial_dataset_size)
+    pcof_initial_total[1] = [pcof_optimal_1, pcof_optimal_2]
+
+    covariance_list = [] 
+    mean_list = []
+    rand_seed_list = []
+    param_init_list = []
+
+
+    q_pred_infidelity_total[0] =
+        Dict{Union{GateType,ProductGate}, Float64}(g => 1.0 for g in gates)
+
+    q_p_meas_infidelity_total[0] =
+        Dict{Union{GateType,ProductGate}, Float64}(g => 1.0 for g in gates)
+
+    n_splines_total = fill(n_splines, N_gates)
+    T_total = fill(T, N_gates)
+    nsteps_total = fill(nsteps, N_gates)
+    degree_total = fill(degree, N_gates)
+    total_data_count = N_gates
+
+    control_params_init = [degree_init, n_splines_init, T_init, nsteps_init]
+    control_params_total = [degree_total, n_splines_total, T_total, nsteps_total]
+
+
+    downweight_power = 0.7
+    iter_count = 1
+
+    iterations = 9000
+    burnin = 8000
+    thin = 10
+    t0_adapt = 1000
+
+    MHG_params = [iterations, burnin, thin, t0_adapt, ωmin, ωmax]
+
+    U0 = Matrix(1.0*I, 4, 4)
+
+    if isnothing(initial_guess)
+        ω1_init = rand(Uniform(ω1_min, ω1_max))
+        ω2_init = rand(Uniform(ω2_min, ω2_max))
+        # J_init = rand(Uniform(Jmin, Jmax))
+        ξ_init = rand(Uniform(ξmin, ξmax))
+        θ_init = [ω1_init ω2_init ξ_init]
+    else
+        θ_init = initial_guess
+    end
+    # θ_init = [4.49 4.61 0.055] .* 2pi
+    # θ_init = [4.5 4.6 0.01] .* 2pi
+    event_obs = Vector{Array{Float64}}(undef, N_gates)
+    pcof_optimal_total = Vector{Vector{Vector{Float64}}}(undef, N_gates)
+    downgrade_prior = nothing 
+    covariance_downgrade = nothing
+    iter_count = 1
+    for i in 1:max_characterizations
+        push!(param_init_list, θ_init)
+        # perform characterization and then optimal control 
+        control_dict = OrderedDict{Union{GateType,ProductGate}, Vector{QuditControl}}()
+        q_pred_infidelity = OrderedDict{Union{GateType,ProductGate}, Float64}()
+        q_p_meas_infidelity = OrderedDict{Union{GateType,ProductGate}, Float64}()
+        rand_seed = rand(RandomDevice(), UInt64)
+        push!(rand_seed_list, rand_seed)
+        if i == 1
+            w2_chain_multi = run_w2_chain_quantum_multi_adaptive(
+                    event_obs_init;
+                    θ = θ_init,
+                    ωr = ωr_vec,
+                    degree = [degree],
+                    n_splines = [n_splines_init],
+                    U0 = U0,
+                    T = [T_init],
+                    λ_log0 = log(10.0),
+                    nsteps = [nsteps_init],
+                    pcof_optimal_total = pcof_initial_total,
+                    carrier_freqs = carrier_freqs,
+                    total_data_count = initial_dataset_size,
+                    ωmin = ωmin,
+                    ωmax = ωmax,
+                    iterations = iterations,
+                    scale_factor = nsteps_init + 1,
+                    burnin = burnin,
+                    thin = thin,
+                    rng = Random.seed!(rand_seed),
+                    t0_adapt = t0_adapt, 
+                    verbose = false
+                    )
+        else
+            # println("pcof_optimal total")
+            # println(pcof_optimal_total)
+            w2_chain_multi = run_w2_chain_quantum_multi_adaptive(
+                    event_obs;
+                    θ = θ_init,
+                    ωr = ωr_vec,
+                    degree = degree_total,
+                    n_splines = n_splines_total,
+                    prior = downgrade_prior,
+                    U0 = U0,
+                    T = T_total,
+                    λ_log0 = log(10.0),
+                    nsteps = nsteps_total,
+                    pcof_optimal_total = pcof_optimal_total,
+                    carrier_freqs = carrier_freqs,
+                    total_data_count = N_gates,
+                    ωmin = ωmin,
+                    ωmax = ωmax,
+                    iterations = iterations,
+                    scale_factor = nsteps_total[1] + 1,
+                    burnin = burnin,
+                    thin = thin,
+                    initial_cov_p = covariance_downgrade, 
+                    rng = Random.seed!(rand_seed),
+                    t0_adapt = t0_adapt
+                    )
+        end
+        
+        display(w2_chain_multi.diagnostic_chain[:,1,:]./2pi)
+
+        
+
+        # single qubit parameters
+        add_param_samples(q1, w2_chain_multi.diagnostic_chain[:,1,1], zeros(length(w2_chain_multi.diagnostic_chain[:,1,1])), iter = iter_count)
+        add_param_samples(q2,  w2_chain_multi.diagnostic_chain[:,1,2], zeros(length(w2_chain_multi.diagnostic_chain[:,1,2])), iter = iter_count)
+        
+        # coupling parameters 
+        # use this for cross-kerr coupling
+        add_param_samples(pair, w2_chain_multi.diagnostic_chain[:,1,3], zeros(length(w2_chain_multi.diagnostic_chain[:,1,3])), iter = iter_count)
+        # use this for dipole coupling
+        # add_param_samples(pair, zeros(length(w2_chain_multi.diagnostic_chain[:,1,1])), w2_chain_multi.diagnostic_chain[:,1,1],iter = iter_count)
+
+
+        # add_param_samples(q1, [4.5 * 2pi], zeros(1), iter = iter_count)
+        # add_param_samples(q2, [4.6 * 2pi], zeros(1), iter = iter_count)
+        # add_param_samples(pair, zeros(1), [0.005*2pi], iter = iter_count)
+        q1.omega_rot = ωr 
+        q2.omega_rot = ωr
+
+        
+        
+        for j in 1:N_gates
+
+            
+            pred_infidel = predicted_infidelity(pair, gates[j], pair.controls[gates[j]][1], pair.controls[gates[j]][2], dt = dt, iter = iter_count)
+            if pred_infidel > epsilon || (q_p_meas_infidelity_total[iter_count - 1][gates[j]]) > epsilon 
+                println("re-optimizing,  measured infidelity: ", q_p_meas_infidelity_total[iter_count-1][gates[j]])
+                println("re-optimizing,  predicted infidelity: ", pred_infidel)
+                pcof_optimal = optimize_control(pair, gates[j], dt = dt,
+                        options = ["max_iter" => n_iters_opt, "print_level" => 5, "limited_memory_max_history" => 250],
+                        iter = iter_count, max_amplitude = max_control_amplitude)
+                # println("optimized coeffs for $(gates[j]) gate")
+                # println(pcof_optimal.x)
+                
+            end
+
+            inf_s, inf_p, pop_history, psi_final = measure_infidelity(physical_pair, gates[j], pair.controls[gates[j]][1], pair.controls[gates[j]][2], 100000, dt = dt)
+            event_obs[j] = pop_history
+            q_p_meas_infidelity[gates[j]] = clamp(inf_p, 1E-6, 1) 
+            control_dict[gates[j]] = pair.controls[gates[j]]
+            pred_inf = predicted_infidelity(pair, gates[j], pair.controls[gates[j]][1], pair.controls[gates[j]][2], dt = dt, iter = iter_count)
+            q_pred_infidelity[gates[j]] = pred_inf
+            println("Predicted Infidelity: ", pred_inf)
+            println("Measured Infidelity: ", clamp(inf_p, 1E-6, 1))
+            pcof_optimal_total[j] = [get(pair.controls[gates[j]][1].coeffs), get(pair.controls[gates[j]][2].coeffs)]
+            # println("pcof gate $(gates[j]) after: ")
+            # println(pcof_optimal_total[j])
+            save_object(joinpath(pcof_dir, "pcof_optimal_$i.jld2"), pcof_optimal_total)
+        end
+        control_dict_total[iter_count] = control_dict 
+        q_pred_infidelity_total[iter_count] = q_pred_infidelity 
+        q_p_meas_infidelity_total[iter_count] = q_p_meas_infidelity
+
+        if save_data 
+            save_object(joinpath(chain_data, "chain_data_$i.jld2"), w2_chain_multi)
+            save_object(joinpath(event_obs_folder, "event_obs_$i.jld2"), event_obs)
+        end
+
+
+        # downgrade_prior = nothing
+        # θ_init = [4.5 4.6 0.005] .* 2pi
+        # downgrade_prior = nothing
+        covariance_mat = cov(w2_chain_multi.diagnostic_chain[:,1,:])
+        covariance_downgrade = (1 / downweight_power) * covariance_mat
+        mean_data = mean.(eachcol(w2_chain_multi.diagnostic_chain[:,1,:]))
+        if all(values(q_p_meas_infidelity) .< epsilon) && all(values(q_pred_infidelity) .< epsilon)
+            println("Loop terminated, measured infidelity and predicted infidelity small")
+            break
+            
+            # break
+        else
+            if i == max_characterizations
+                println("Max # of characterizations reached, loop terminated")
+                break 
+            end
+            println("Re-run characterization")
+            prior_tol = 3E-4
+            if all(values(q_p_meas_infidelity) .< prior_tol)
+                downgrade_prior = MvNormal(mean_data, covariance_downgrade)
+                θ_init = reshape(mean_data, 1, length(mean_data))
+            else
+                println("Measured infidelity of a single gate was larger than $prior_tol, setting prior to be uniform to explore more parameter space.")
+                downgrade_prior = nothing
+                # ω1_init = rand(Uniform(ω1_min, ω1_max))
+                # ω2_init = rand(Uniform(ω2_min, ω2_max))
+                # J_init = rand(Uniform(Jmin, Jmax))
+                # ξ_init = rand(Uniform(ξmin, ξmax))
+                # θ_init = [ω1_init ω2_init ξ_init]
+                θ_init = w2_chain_multi.ω_best
+                # θ_init = [4.4 4.7 0.015]
+                # θ_init = [4.45 4.65 0.008]
+                # θ_init = [4.49 4.61 0.055] .* 2pi
+                
+            end
+            push!(mean_list, mean_data)
+            push!(covariance_list, covariance_mat)
+        end
+
+
+        iter_count += 1
+
+    end
+
+    if save_data 
+        @save joinpath(data_folder, "infidelity_data.jld2") q_pred_infidelity_total q_p_meas_infidelity_total mean_list covariance_list rand_seed_list
+        @save joinpath(data_folder, "characterization_params.jld2") true_params param_init_list MHG_params mean_list covariance_list downweight_power rand_seed_list 
+        @save joinpath(data_folder, "control_params.jld2") control_dict_total gates control_params_init control_params_total carrier_freqs
+    end
+    return iter_count
+end
+
+iter_count = 2
+max_runs = 20
+initial_guess =  [27.351048846350423 29.101220514620582 0.0599950992431776]
+initial_guess = 
+for i in 1:max_runs
+    println("--------------------------------------")
+    println("-------------- Run #$i ---------------")
+    println("--------------------------------------")
+    if i % 2 == 0
+        iter_count = characterization_control_2qubits(6, initial_guess = initial_guess)
+    else
+        iter_count = characterization_control_2qubits(6)
+    end
+end
 #=
 if run_characterization
 
