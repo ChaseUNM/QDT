@@ -3,9 +3,9 @@ using LinearAlgebra, QuantumGateDesign
 ##############################################################
 # GateType enum
 ##############################################################
-@enum GateType IdentityGate PauliX PauliY PauliZ Hadamard Tgate CNOT SWAP CZ
+@enum GateType IdentityGate PauliX PauliY PauliZ Hadamard Tgate SqrtX CNOT SWAP CZ
 
-SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard, Tgate]
+SINGLE_QUDIT_GATES = [PauliX, PauliY, PauliZ, Hadamard, Tgate, SqrtX]
 
 ##############################################################
 # Functions to get unitaries
@@ -15,6 +15,9 @@ struct ProductGate
     right::GateType
 end
 
+function SqrtX_gate() 
+    return 0.5*[1+im 1-im; 1-im 1+im]
+end
 
 function unitary(gate::GateType)
     # Returns the unitary associated with the gate
@@ -31,6 +34,8 @@ function unitary(gate::GateType)
         return Hadamard_gate()
     elseif gate == Tgate
         return T_gate()
+    elseif gate == SqrtX
+        return SqrtX_gate()
     elseif gate == CNOT
         return CNOT_gate()
     elseif gate == SWAP

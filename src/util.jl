@@ -223,6 +223,7 @@ function map_to_oscillators(id::Integer, Ne::AbstractVector{<:Integer},
 end
 
 gate_to_str(g) = g == PauliX ? "X" :
+                g == SqrtX ? "√X" :
                 g == PauliY ? "Y" :
                 g == PauliZ ? "Z" :
                 g == Hadamard ? "Hadamard" :

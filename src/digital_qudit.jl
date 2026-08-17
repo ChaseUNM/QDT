@@ -4,9 +4,12 @@ using LinearAlgebra, QuantumGateDesign, ValueHistories
 ########################################################################
 # GATE TYPES
 ########################################################################
+function SqrtX_gate() 
+    return 0.5*[1+im 1-im; 1-im 1+im]
+end
 
-@enum GateType IdentityGate PauliX PauliY PauliZ Hadamard Tgate CNOT SWAP CZ
 
+@enum GateType IdentityGate PauliX PauliY PauliZ Hadamard Tgate SqrtX CNOT SWAP CZ
 function unitary(gate::GateType)
     # Returns the unitary associated with the gate
     # as a 2x2 or 4x4 matrix
@@ -22,6 +25,8 @@ function unitary(gate::GateType)
         return Hadamard_gate()
     elseif gate == Tgate
         return T_gate()
+    elseif gate == SqrtX
+        return SqrtX_gate()
     elseif gate == CNOT
         return CNOT_gate()
     elseif gate == SWAP
